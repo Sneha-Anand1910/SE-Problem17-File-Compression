@@ -516,6 +516,7 @@ void create_archive(const std::filesystem::path& output,
             output.string());
     }
 
+    std::cout << "Compression started: reading and compressing inputs...\n" << std::flush;
     auto entries = build_entries(inputs);
     ensure_u32(entries.size(), "Entry count");
 
@@ -526,12 +527,15 @@ void create_archive(const std::filesystem::path& output,
     std::size_t file_count = 0;
     std::uint64_t total_input = 0;
 
+    std::size_t processed_entries = 0;
     for (auto& entry : entries) {
         total_input += entry.data.size();
         ensure_u32(entry.data.size(), "File size");
         ensure_u32(entry.compressed.size(), "Compressed size");
 
         write_local_entry(out, entry);
+        ++processed_entries;
+        std::cout << "  Writing archive entries: " << (100 * processed_entries / entries.size()) << "%\n";
 
         if (!entry.directory) {
             ++file_count;
@@ -595,6 +599,9 @@ void extract_archive(const std::filesystem::path& archive,
         "Cannot create extraction directory: " + destination.string());
 
     const auto safe_root = canonicalish(destination);
+    const auto total_files = std::count_if(
+        records.begin(), records.end(),
+        [](const auto& record) { return !record.directory; });
     std::size_t extracted = 0;
 
     for (const auto& record : records) {
@@ -645,9 +652,9 @@ void extract_archive(const std::filesystem::path& archive,
 
         ++extracted;
         const double progress =
-            records.empty() ? 100.0 :
+            total_files == 0 ? 100.0 :
             100.0 * static_cast<double>(extracted) /
-            static_cast<double>(records.size());
+            static_cast<double>(total_files);
 
         std::cout << "  Extracted " << record.name << " ("
                   << static_cast<int>(progress) << "%)\n";
