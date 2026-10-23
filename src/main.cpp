@@ -7,6 +7,30 @@
 
 namespace {
 
+bool confirm_overwrite(const std::vector<std::filesystem::path>& targets,
+                       bool& overwrite) {
+    overwrite = false;
+    bool conflict = false;
+    for (const auto& target : targets) {
+        if (std::filesystem::exists(target)) {
+            std::cout << "Destination already exists: " << target << '\n';
+            conflict = true;
+        }
+    }
+    if (!conflict) return true;
+
+    std::cout << "Overwrite the listed destination(s)? (y/N): " << std::flush;
+    std::string answer;
+    if (!std::getline(std::cin, answer) ||
+        (answer != "y" && answer != "Y" &&
+         answer != "yes" && answer != "YES")) {
+        std::cout << "Operation cancelled. Existing files were not changed.\n";
+        return false;
+    }
+    overwrite = true;
+    return true;
+}
+
 void print_usage() {
     std::cout
         << "File Compression Tool - basic ZIP implementation\n\n"
@@ -50,14 +74,10 @@ void interactive() {
                 std::string item;
                 while (stream >> item) inputs.push_back({item});
 
-                std::cout << "Overwrite existing archive? (y/N): ";
-                char confirm = 'N';
-                std::cin >> confirm;
-                std::cin.ignore(1024, '\n');
+                bool overwrite = false;
+                if (!confirm_overwrite({archive}, overwrite)) continue;
 
-                ziptool::create_archive(
-                    archive, inputs,
-                    {confirm == 'y' || confirm == 'Y'});
+                ziptool::create_archive(archive, inputs, {overwrite});
             } else if (choice == 2) {
                 std::string archive, destination;
                 std::cout << "Archive: ";
@@ -65,14 +85,19 @@ void interactive() {
                 std::cout << "Destination: ";
                 std::getline(std::cin, destination);
 
-                std::cout << "Overwrite existing files? (y/N): ";
-                char confirm = 'N';
-                std::cin >> confirm;
-                std::cin.ignore(1024, '\n');
+                std::vector<std::filesystem::path> targets;
+                for (const auto& name : ziptool::list_archive(archive)) {
+                    if (!name.empty() && name.back() != '/') {
+                        targets.push_back(
+                            std::filesystem::path(destination) / name);
+                    }
+                }
 
-                ziptool::extract_archive(
-                    archive, destination,
-                    {confirm == 'y' || confirm == 'Y'});
+                bool overwrite = false;
+                if (!confirm_overwrite(targets, overwrite)) continue;
+
+                std::cout << "Extraction started...\n" << std::flush;
+                ziptool::extract_archive(archive, destination, {overwrite});
             } else if (choice == 3) {
                 std::string archive;
                 std::cout << "Archive: ";
