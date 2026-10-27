@@ -1,5 +1,6 @@
 #include "zip_archive.hpp"
 
+#include <algorithm>
 #include <chrono>
 #include <cstdint>
 #include <filesystem>
