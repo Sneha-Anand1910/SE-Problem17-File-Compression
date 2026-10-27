@@ -1,0 +1,33 @@
+name: Performance benchmark
+
+on:
+  push:
+    branches:
+      - "feature/performance-testing"
+      - "main"
+    paths:
+      - "src/**"
+      - "tests/performance_test.cpp"
+      - "CMakeLists.txt"
+      - ".github/workflows/performance.yml"
+  pull_request:
+    branches: [ "main" ]
+    paths:
+      - "src/**"
+      - "tests/performance_test.cpp"
+      - "CMakeLists.txt"
+
+jobs:
+  benchmark:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Install build dependency
+        run: sudo apt-get update && sudo apt-get install -y cmake g++ zlib1g-dev
+      - name: Configure
+        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+      - name: Build performance benchmark
+        run: cmake --build build --parallel --target performance_test
+      - name: Run 1 MiB, 10 MiB and 100 MiB benchmark
+        run: ./build/performance_test
