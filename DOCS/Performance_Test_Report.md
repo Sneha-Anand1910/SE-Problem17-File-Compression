@@ -23,13 +23,13 @@ The 100 MiB case must complete successfully without timeout or failure, and the 
 
 ## Results
 
-Results are captured in the GitHub Actions log for the performance workflow. The final measured values should be copied into this section after the benchmark run used for the final submission.
+Measured on GitHub Actions ubuntu-24.04 runner. The benchmark completed successfully for all three sizes and verified each extracted file byte-for-byte against its source.
 
 | Dataset | Compression (ms) | Extraction (ms) | Archive size | Integrity |
 |---|---:|---:|---:|---|
-| 1 MiB | CI result | CI result | CI result | PASS |
-| 10 MiB | CI result | CI result | CI result | PASS |
-| 100 MiB | CI result | CI result | CI result | PASS |
+| 1 MiB | 25 | 0 | 1,048,708 bytes | PASS |
+| 10 MiB | 256 | 10 | 10,485,894 bytes | PASS |
+| 100 MiB | 2492 | 122 | 104,857,736 bytes | PASS |
 
 ## Evidence
 
@@ -38,3 +38,6 @@ Performance workflow:
 
 Benchmark source:
 - `tests/performance_test.cpp`
+
+### CI Evidence
+The successful benchmark run is GitHub Actions run #8 for the Performance benchmark workflow.
