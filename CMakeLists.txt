@@ -29,5 +29,8 @@ target_link_libraries(file-compress PRIVATE compression_core)
 add_executable(smoke_test tests/smoke_test.cpp)
 target_link_libraries(smoke_test PRIVATE compression_core)
 
+add_executable(performance_test tests/performance_test.cpp)
+target_link_libraries(performance_test PRIVATE compression_core)
+
 enable_testing()
 add_test(NAME smoke_test COMMAND smoke_test)
