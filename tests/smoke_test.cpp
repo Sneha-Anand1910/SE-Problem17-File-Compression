@@ -137,6 +137,58 @@ int main() {
         std::cerr << "Empty nested directory was not restored.\n";
         return 1;
     }
+    // FCTG1-4: Refusing archive overwrite must preserve its bytes.
+    const std::string original_archive = read(archive);
+    if (original_archive.empty()) {
+        std::cerr << "Overwrite test requires a nonempty archive.\n";
+        return 1;
+    }
+
+    bool archive_overwrite_rejected = false;
+    try {
+        ziptool::create_archive(
+            archive, {{root / "input"}}, {false});
+    } catch (const std::runtime_error&) {
+        archive_overwrite_rejected = true;
+    }
+
+    if (!archive_overwrite_rejected ||
+        read(archive) != original_archive) {
+        std::cerr << "Archive overwrite protection test failed.\n";
+        return 1;
+    }
+
+    // FCTG1-4: Refusing extraction overwrite must preserve user data.
+    const fs::path protected_file = output / "input/readme.txt";
+    const std::string user_content = "Existing user data: keep unchanged.\n";
+
+    {
+        std::ofstream file(
+            protected_file, std::ios::binary | std::ios::trunc);
+        file << user_content;
+        file.close();
+
+        if (!file) {
+            std::cerr << "Failed to prepare overwrite test input.\n";
+            return 1;
+        }
+    }
+
+    bool extraction_overwrite_rejected = false;
+    try {
+        ziptool::extract_archive(archive, output, {false});
+    } catch (const std::runtime_error&) {
+        extraction_overwrite_rejected = true;
+    }
+
+    if (!extraction_overwrite_rejected ||
+        !fs::is_regular_file(protected_file) ||
+        read(protected_file) != user_content) {
+        std::cerr << "Extraction overwrite protection test failed.\n";
+        return 1;
+    }
+
+    std::cout << "Overwrite protection tests passed.\n";
 
     fs::remove_all(root);
     std::cout << "Smoke test passed.\n";
