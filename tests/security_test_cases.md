@@ -67,15 +67,10 @@ tests. The Actual result field is intentionally blank for every case.
 - **Expected result:** Empty ordinary input is accepted and remains zero bytes
   after round-trip. Missing upload and zero-byte archive inputs are rejected
   with an error response.
-- **Actual result:** Confirmed `MAX_FILE_SIZE` is 52,428,800 bytes.
-  Uploaded a synthetic file of 52,428,801 bytes (50 MiB + 1 byte) to
-  `/api/compress`. The API returned HTTP 400 BAD REQUEST with
-  `{"error":"Uploaded file exceeds the size limit"}`. No archive was returned.
-  Executable invocation was not independently monitored.
-- **Status:** Passed- **Existing coverage:** `backend/test_app.py` checks empty upload saving, and
-  `tests/smoke_test.cpp` checks an empty file in C++ round-trip. Full route
-  behavior is not covered by those checks.
-
+- **Actual result:** Not independently verified for this test case.
+- **Status:** Not Run
+- **Existing coverage:** `backend/test_app.py` checks empty upload saving, and `tests/smoke_test.cpp` checks empty-file round-trip.     Full API route behavior has not been verified.
+  
 ## SEC-LIMIT-FILE-EXACT — File exactly at per-file limit
 
 - **Test objective:** Verify acceptance at the configured per-file size
