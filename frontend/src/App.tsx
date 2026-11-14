@@ -11,6 +11,8 @@ const sections: { id: Action; title: string; description: string; button: string
 function App() {
   const [files, setFiles] = useState<Partial<Record<Action, File[]>>>({})
   const [status, setStatus] = useState<Partial<Record<Action, string>>>({})
+  const [results, setResults] = useState<Partial<Record<Action, string[]>>>({})
+  const [loading, setLoading] = useState<Partial<Record<Action, boolean>>>({})
   const [archiveName, setArchiveName] = useState('archive.zip')
   const zipName = archiveName.trim().replace(/\.zip$/i, '') || 'archive'
   const finalArchiveName = `${zipName}.zip`
@@ -38,8 +40,46 @@ function App() {
     setStatus(current => ({ ...current, compress: updated.length ? `${updated.length} file${updated.length === 1 ? '' : 's'} selected.` : 'Select a file to begin.' }))
   }
 
-  function requestAction(action: Action) {
-    setStatus(current => ({ ...current, [action]: 'Backend integration is not connected yet.' }))
+  async function requestAction(action: Action) {
+    const selected = files[action] ?? []
+    if (!selected.length) return
+
+    const form = new FormData()
+    if (action === 'compress') {
+      selected.forEach(file => form.append('files', file))
+      form.append('archive_name', finalArchiveName)
+    } else {
+      form.append('archive', selected[0])
+    }
+
+    setLoading(current => ({ ...current, [action]: true }))
+    setStatus(current => ({ ...current, [action]: 'Processing...' }))
+    setResults(current => ({ ...current, [action]: undefined }))
+    try {
+      const response = await fetch(`/api/${action}`, { method: 'POST', body: form })
+      if (!response.ok) {
+        const error = await response.json().catch(() => null)
+        throw new Error(error?.error || `Request failed (${response.status})`)
+      }
+      if (action === 'list') {
+        const data: { files: string[] } = await response.json()
+        setResults(current => ({ ...current, list: data.files }))
+        setStatus(current => ({ ...current, list: `${data.files.length} file${data.files.length === 1 ? '' : 's'} found.` }))
+      } else {
+        const url = URL.createObjectURL(await response.blob())
+        const link = document.createElement('a')
+        link.href = url
+        link.download = action === 'compress' ? finalArchiveName : 'extracted.zip'
+        link.click()
+        setTimeout(() => URL.revokeObjectURL(url), 0)
+        setStatus(current => ({ ...current, [action]: 'Download started.' }))
+        setResults(current => ({ ...current, [action]: [link.download] }))
+      }
+    } catch (error) {
+      setStatus(current => ({ ...current, [action]: error instanceof Error ? error.message : 'Network request failed.' }))
+    } finally {
+      setLoading(current => ({ ...current, [action]: false }))
+    }
   }
 
   return (
@@ -53,7 +93,7 @@ function App() {
       <main className="workspace">
         <div className="section-heading">
           <div><span className="eyebrow">Workspace</span><h2>Choose an action</h2></div>
-          <span className="connection-status"><span className="status-dot" /> Backend not connected</span>
+          <span className="connection-status"><span className="status-dot" /> API configured</span>
         </div>
         <div className="cards">
           {sections.map((section, index) => (
@@ -75,9 +115,9 @@ function App() {
                 <input type="text" value={archiveName} onChange={event => setArchiveName(event.target.value)} onBlur={() => setArchiveName(finalArchiveName)} placeholder="archive.zip" />
                 <span>Output name: {finalArchiveName}</span>
               </label>}
-              <button type="button" disabled={!files[section.id]?.length} onClick={() => requestAction(section.id)}>{section.button} <span aria-hidden="true">→</span></button>
+              <button type="button" disabled={!files[section.id]?.length || loading[section.id]} onClick={() => requestAction(section.id)}>{loading[section.id] ? 'Processing...' : section.button} <span aria-hidden="true">→</span></button>
               <p className="message" role="status">{status[section.id] || 'Select a file to begin.'}</p>
-              <div className="result"><strong>Result</strong><span>Awaiting backend connection</span></div>
+              <div className="result"><strong>Result</strong><span>{results[section.id]?.map((name, index) => <div key={`${name}-${index}`}>{name}</div>) ?? 'Awaiting request'}</span></div>
             </section>
           ))}
         </div>
