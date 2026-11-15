@@ -67,7 +67,7 @@ The coverage-enabled C++ run passed **100% of the single registered CTest test**
 
 PR #18 adds `backend/test_integration.py`. Its session fixture configures and builds the actual C++ executable with CMake, then supplies its path through `COMPRESSION_BINARY` to the Flask application. These tests use Flask's test client and do not use the placeholder executable used by the original helper/API tests.
 
-The GitHub Actions run associated with PR #18 (run **43684283011**) completed successfully. Its build job reported successful CMake configure/build, C++ CTest, dependency installation, and Flask API test steps. The backend suite reported **28 passed, 0 failed**, and CTest reported **1/1 registered C++ tests passed**.
+The GitHub Actions run associated with PR #18 (run **43687260485**) completed successfully. Its build job reported successful CMake configure/build, C++ CTest, dependency installation, and Flask API test steps. The backend suite reported **28 passed, 0 failed**, and CTest reported **1/1 registered C++ tests passed**.
 
 | Integration area | Evidence in `backend/test_integration.py` |
 | --- | --- |
