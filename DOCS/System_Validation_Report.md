@@ -52,13 +52,13 @@ The STP identifies `FCT-F-008` for creating a compressed output file, `FCT-F-014
 
 SV-02 validates the observed List feature, but this report does not assign it an STP requirement ID without a verified matching requirement. The STP's planned test cases and their statuses are separate from these performed manual checks.
 
-## 9. Overall validation summary and conclusion
-
-All **four performed manual system checks passed** in the stated Windows environment. The interface successfully produced a named ZIP, displayed its three filenames, and returned an extraction ZIP containing the three files. The original and extracted DOCX had identical SHA-256 hashes. These results validate the exercised end-to-end workflow and DOCX integrity only; automated CTest and pytest execution are reported separately in the project's unit testing documentation.
-
-
 ## 8. Additional automated API integration evidence (PR #18)
 
 A separate automated integration suite, `backend/test_integration.py`, builds the real C++ executable and exercises the Flask Compress, List, and Extract routes through Flask's test client. The associated GitHub Actions run **43687260485** completed successfully with **28 backend tests passed** and **1/1 registered C++ CTest tests passed**. The integration suite verifies text, binary, and empty-file behavior, byte-for-byte round trips, nested paths, custom archive naming, invalid and zero-byte archives, upload limits, configured exact-boundary behavior, and temporary-workspace cleanup for the tested success and failure paths.
 
 This is automated API evidence and is separate from the four manual browser checks in Section 4. The controlled small-limit tests do not constitute full default 50 MiB/100 MiB stress tests. This report update does not claim that additional manual frontend tests were performed.
+
+## 9. Overall validation summary and conclusion
+
+All **four performed manual system checks passed** in the stated Windows environment. The interface successfully produced a named ZIP, displayed its three filenames, and returned an extraction ZIP containing the three files. The original and extracted DOCX had identical SHA-256 hashes. These results validate the exercised end-to-end workflow and DOCX integrity only; automated CTest and pytest execution are reported separately in the project's unit testing documentation.
+
