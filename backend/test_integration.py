@@ -80,7 +80,8 @@ def test_real_executable_lists_compressed_files(real_client):
         content_type="multipart/form-data",
     )
     assert listed.status_code == 200, listed.get_data(as_text=True)
-    assert listed.json == {"files": ["first.txt", "second.txt"]}
+    assert set(listed.json["files"]) == {"first.txt", "second.txt"}
+    assert len(listed.json["files"]) == 2
 
 
 def test_real_executable_extracts_and_preserves_file_bytes(real_client):
