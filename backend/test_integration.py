@@ -216,8 +216,8 @@ def test_real_api_cleans_archive_workspace_after_invalid_input(real_client, monk
 
 
 
-def test_real_api_enforces_configured_per_file_limit(real_client):
-    real_client.application.config["MAX_FILE_SIZE"] = 3
+def test_real_api_enforces_configured_per_file_limit(real_client, monkeypatch):
+    monkeypatch.setitem(real_client.application.config, "MAX_FILE_SIZE", 3)
     response = compress_files(real_client, [("too-large.txt", b"four")])
 
     assert response.status_code == 400
