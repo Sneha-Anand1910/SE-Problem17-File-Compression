@@ -16,9 +16,9 @@ contents must not be treated as unsupported solely because of their
 extension or MIME type.
 
 Existing coverage is referenced where relevant to avoid duplicating automated
-tests. The Actual result field is intentionally blank for every case.
+tests. Actual results and execution statuses are recorded for each test case.
 
-## SEC-UPLOAD-01 — Upload validation and unsupported archive
+## SEC-UPLOAD-01 â€” Upload validation and unsupported archive
 
 - **Test objective:** Verify missing or unsafe uploads and invalid/unsupported
   archive content are rejected safely. Confirm that arbitrary file contents
@@ -53,7 +53,7 @@ tests. The Actual result field is intentionally blank for every case.
   `backend/test_app.py`. Invalid ZIP handling is present in
   `tests/smoke_test.cpp`. Add only uncovered route-level cases.
 
-## SEC-UPLOAD-02 — Empty uploads
+## SEC-UPLOAD-02 â€” Empty uploads
 
 - **Test objective:** Distinguish an empty file from an absent upload and
   verify the current empty-file behavior through the API.
@@ -67,11 +67,11 @@ tests. The Actual result field is intentionally blank for every case.
 - **Expected result:** Empty ordinary input is accepted and remains zero bytes
   after round-trip. Missing upload and zero-byte archive inputs are rejected
   with an error response.
-- **Actual result:** Not independently verified for this test case.
-- **Status:** Not Run
-- **Existing coverage:** `backend/test_app.py` checks empty upload saving, and `tests/smoke_test.cpp` checks empty-file round-trip.     Full API route behavior has not been verified.
-  
-## SEC-LIMIT-FILE-EXACT — File exactly at per-file limit
+- **Actual result:** A zero-byte ordinary file was accepted by `/api/compress` (HTTP 200). The resulting ZIP was listed and extracted successfully (HTTP 200), preserving the zero-byte file. A zero-byte archive submitted to `/api/list` and `/api/extract` returned HTTP 400 (Invalid ZIP file).
+- **Status:** Passed
+- **Existing coverage:** `backend/test_app.py` checks empty upload saving, and `tests/smoke_test.cpp` checks an empty-file round-trip. Full API route behavior has now been verified through the security test.
+
+## SEC-LIMIT-FILE-EXACT â€” File exactly at per-file limit
 
 - **Test objective:** Verify acceptance at the configured per-file size
   boundary.
@@ -85,11 +85,11 @@ tests. The Actual result field is intentionally blank for every case.
   3. POST the file to `/api/compress`.
 - **Expected result:** The per-file size check accepts the file; the request
   succeeds if all other limits and executable prerequisites are satisfied.
-- **Actual result:**
-- **Status:** Not Run
+- **Actual result:** MAX_FILE_SIZE was 52,428,800 bytes (50 MiB). A synthetic file of exactly 52,428,800 bytes was accepted by /api/compress with HTTP 200; exact.zip was 51,098 bytes.
+- **Status:** Passed
 - **Existing coverage:** No exact per-file boundary case identified.
 
-## SEC-LIMIT-FILE-OVER — File one byte above per-file limit
+## SEC-LIMIT-FILE-OVER â€” File one byte above per-file limit
 
 - **Test objective:** Verify rejection immediately above the configured
   per-file boundary.
@@ -103,15 +103,11 @@ tests. The Actual result field is intentionally blank for every case.
 - **Expected result:** The request is rejected with a client error indicating
   the file-size limit; the executable is not invoked and no archive is
   returned.
-- **Actual result:** Confirmed MAX_FILE_SIZE is 52,428,800 bytes.
-  Uploaded a synthetic file of 52,428,801 bytes (50 MiB + 1 byte) to
-  /api/compress. The API returned HTTP 400 BAD REQUEST with
-  {"error":"Uploaded file exceeds the size limit"}. No archive was returned.
-  Executable invocation was not independently monitored.
+- **Actual result:** Uploaded a synthetic file of 52,428,801 bytes (50 MiB + 1 byte) to `/api/compress`. The API returned HTTP 400 BAD REQUEST with `{"error":"Uploaded file exceeds the size limit"}`. No archive was returned. Executable invocation was not independently monitored.
 - **Status:** Passed
 - **Existing coverage:** No per-file over-limit case identified.
 
-## SEC-LIMIT-COUNT — Maximum file count and one additional file
+## SEC-LIMIT-COUNT â€” Maximum file count and one additional file
 
 - **Test objective:** Verify the configured maximum file count and rejection
   of one additional file.
@@ -134,7 +130,7 @@ tests. The Actual result field is intentionally blank for every case.
 - **Status:** Passed
 - **Existing coverage:** No maximum-count boundary case identified.
 
-## SEC-LIMIT-REQUEST — Request-size boundary
+## SEC-LIMIT-REQUEST â€” Request-size boundary
 
 - **Test objective:** Verify the total request limit, including multipart
   framing.
@@ -158,7 +154,7 @@ tests. The Actual result field is intentionally blank for every case.
 - **Existing coverage:** `backend/test_app.py` tests an oversized request.
   Exact-boundary behavior is not covered.
 
-## SEC-ZIP-CORRUPT — Corrupted archive through API
+## SEC-ZIP-CORRUPT â€” Corrupted archive through API
 
 - **Test objective:** Verify that corrupted archives are rejected through the
   Flask list and extract routes.
@@ -178,7 +174,7 @@ tests. The Actual result field is intentionally blank for every case.
 - **Existing coverage:** C++ CRC corruption is tested in
   `tests/smoke_test.cpp`; Flask route behavior remains to be tested.
 
-## SEC-ZIP-TRUNC — Truncated archive through API
+## SEC-ZIP-TRUNC â€” Truncated archive through API
 
 - **Test objective:** Verify truncated archive rejection through the Flask
   list and extract routes.
@@ -198,7 +194,7 @@ tests. The Actual result field is intentionally blank for every case.
 - **Existing coverage:** C++ truncated ZIP rejection is tested in
   `tests/smoke_test.cpp`; Flask route behavior remains to be tested.
 
-## SEC-ZIP-SLIP — Archive path traversal
+## SEC-ZIP-SLIP â€” Archive path traversal
 
 - **Test objective:** Ensure traversal and absolute-path archive entries
   cannot write outside the extraction root.
@@ -217,7 +213,7 @@ tests. The Actual result field is intentionally blank for every case.
   coverage only if it is not covered by the real-executable integration
   case.
 
-## SEC-COMP-SYMLINK-FILE — External file symlink during compression
+## SEC-COMP-SYMLINK-FILE â€” External file symlink during compression
 
 - **Test objective:** Ensure compression does not read an outside file through
   a symlink located in the selected input tree.
@@ -237,7 +233,7 @@ tests. The Actual result field is intentionally blank for every case.
 - **Existing coverage:** Existing symlink tests cover extraction, not
   symlinks encountered during compression.
 
-## SEC-COMP-SYMLINK-DIR — External directory symlink during compression
+## SEC-COMP-SYMLINK-DIR â€” External directory symlink during compression
 
 - **Test objective:** Ensure compression does not recurse into an external
   directory through a symlink in the selected input tree.
@@ -257,7 +253,7 @@ tests. The Actual result field is intentionally blank for every case.
 - **Existing coverage:** Existing symlink tests cover extraction, not
   symlinks encountered during compression.
 
-## SEC-EXTRACT-RACE — Extraction path replacement race
+## SEC-EXTRACT-RACE â€” Extraction path replacement race
 
 - **Test objective:** Check that replacing a validated destination component
   with a symlink cannot redirect a write outside the extraction root.
@@ -277,7 +273,7 @@ tests. The Actual result field is intentionally blank for every case.
 - **Existing coverage:** Existing extraction symlink tests cover pre-existing
   links, not replacement between validation and file open.
 
-## SEC-TEMP-CLEANUP — Temporary-file cleanup after success and failure
+## SEC-TEMP-CLEANUP â€” Temporary-file cleanup after success and failure
 
 - **Test objective:** Verify request-specific staging data is removed after
   successful and failed operations.
@@ -290,12 +286,12 @@ tests. The Actual result field is intentionally blank for every case.
   3. Inspect the test temporary root after each response.
 - **Expected result:** Each request's temporary directory and uploaded or
   extracted data are removed after the response, including handled failures.
-- **Actual result:**
-- **Status:** Not Run
+- **Actual result:** Successful compression returned HTTP 200 and invalid archive extraction returned HTTP 400. Comparison of temporary-directory entries before and after both requests found zero new temporary directories remaining. Successful list/extract, executable-failure and timeout cleanup paths were not separately tested.
+- **Status:** Partially Passed
 - **Existing coverage:** No explicit temporary-directory cleanup test
   identified.
 
-## SEC-REAL-API — Flask integration with real C++ executable
+## SEC-REAL-API â€” Flask integration with real C++ executable
 
 - **Test objective:** Exercise the actual Flask-to-executable boundary rather
   than a placeholder executable.
