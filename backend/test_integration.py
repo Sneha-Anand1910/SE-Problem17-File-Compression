@@ -170,3 +170,46 @@ def test_real_api_rejects_non_zip_content_for_list_and_extract(real_client):
     assert extracted.status_code == 400
     assert listed.json == {"error": "Invalid ZIP file"}
     assert extracted.json == {"error": "Invalid ZIP file"}
+
+
+
+def test_real_api_cleans_compression_workspace_after_success(real_client, monkeypatch):
+    import tempfile
+
+    original_factory = tempfile.TemporaryDirectory
+    workspaces = []
+
+    def tracked_temp_directory(*args, **kwargs):
+        directory = original_factory(*args, **kwargs)
+        workspaces.append(Path(directory.name))
+        return directory
+
+    monkeypatch.setattr(tempfile, "TemporaryDirectory", tracked_temp_directory)
+    response = compress_files(real_client, [("cleanup.txt", b"temporary data")])
+
+    zip_bytes(response)
+    assert workspaces
+    assert all(not workspace.exists() for workspace in workspaces)
+
+
+def test_real_api_cleans_archive_workspace_after_invalid_input(real_client, monkeypatch):
+    import tempfile
+
+    original_factory = tempfile.TemporaryDirectory
+    workspaces = []
+
+    def tracked_temp_directory(*args, **kwargs):
+        directory = original_factory(*args, **kwargs)
+        workspaces.append(Path(directory.name))
+        return directory
+
+    monkeypatch.setattr(tempfile, "TemporaryDirectory", tracked_temp_directory)
+    response = real_client.post(
+        "/api/list",
+        data={"file": (BytesIO(b"broken"), "broken.zip")},
+        content_type="multipart/form-data",
+    )
+
+    assert response.status_code == 400
+    assert workspaces
+    assert all(not workspace.exists() for workspace in workspaces)
