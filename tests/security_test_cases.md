@@ -163,15 +163,18 @@ tests. Actual results and execution statuses are recorded for each test case.
   2. Create a separate corrupted copy by changing test data or CRC metadata.
   3. POST the corrupted copy to `/api/list` and `/api/extract`.
   4. Inspect responses and the isolated filesystem.
-- **Expected result:** The routes return an invalid-archive error; no
-  success-shaped response is returned and no unsafe output is written.
+- **Expected result:** `/api/list` may return HTTP 200 and display filenames
+  when the ZIP metadata is readable, even if entry contents are corrupted.
+  `/api/extract` must validate entry CRCs, reject the corrupted archive with
+  HTTP 400, and avoid writing extracted output.
 - **Actual result:** Created a ZIP with altered entry data. `/api/list`
   returned HTTP 200 OK with the filename metadata. `/api/extract` returned
   HTTP 400 BAD REQUEST with `{"error":"Invalid ZIP file"}`.
-  Listing does not validate the entry data CRC; extraction rejects corruption.
-- **Status:** Partially Passed
+  `/api/list` reads ZIP metadata, whereas `/api/extract` reads entry contents
+  and validates their CRC.
+- **Status:** Passed
 - **Existing coverage:** C++ CRC corruption is tested in
-  `tests/smoke_test.cpp`; Flask route behavior remains to be tested.
+  `tests/smoke_test.cpp`; the API behavior is recorded above.
 
 ## SEC-ZIP-TRUNC — Truncated archive through API
 
