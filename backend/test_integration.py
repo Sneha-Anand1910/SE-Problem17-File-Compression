@@ -129,3 +129,18 @@ def test_real_executable_uses_requested_archive_name(real_client):
     )
     zip_bytes(response)
     assert 'filename="custom-output.zip"' in response.headers["Content-Disposition"]
+
+
+
+def test_real_executable_round_trips_nested_upload_paths(real_client):
+    original = b"nested directory content"
+    compressed = compress_files(real_client, [("reports/2026/summary.txt", original)])
+
+    extracted = real_client.post(
+        "/api/extract",
+        data={"archive": (BytesIO(zip_bytes(compressed)), "nested.zip")},
+        content_type="multipart/form-data",
+    )
+    with zipfile.ZipFile(BytesIO(zip_bytes(extracted))) as archive:
+        assert "reports/2026/summary.txt" in archive.namelist()
+        assert archive.read("reports/2026/summary.txt") == original
