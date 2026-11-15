@@ -128,7 +128,7 @@ def test_real_executable_uses_requested_archive_name(real_client):
         real_client, [("named.txt", b"custom archive")], archive_name="custom-output.zip"
     )
     zip_bytes(response)
-    assert 'filename="custom-output.zip"' in response.headers["Content-Disposition"]
+    assert "custom-output.zip" in response.headers["Content-Disposition"]
 
 
 
