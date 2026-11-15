@@ -213,3 +213,22 @@ def test_real_api_cleans_archive_workspace_after_invalid_input(real_client, monk
     assert response.status_code == 400
     assert workspaces
     assert all(not workspace.exists() for workspace in workspaces)
+
+
+
+def test_real_api_enforces_configured_per_file_limit(real_client):
+    real_client.application.config["MAX_FILE_SIZE"] = 3
+    response = compress_files(real_client, [("too-large.txt", b"four")])
+
+    assert response.status_code == 400
+    assert response.json == {"error": "Uploaded file exceeds the size limit"}
+
+
+def test_real_api_enforces_configured_file_count_limit(real_client):
+    real_client.application.config["MAX_FILES"] = 1
+    response = compress_files(
+        real_client, [("one.txt", b"1"), ("two.txt", b"2")]
+    )
+
+    assert response.status_code == 400
+    assert response.json == {"error": "Too many files"}
