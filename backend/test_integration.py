@@ -232,3 +232,145 @@ def test_real_api_enforces_configured_file_count_limit(real_client):
 
     assert response.status_code == 400
     assert response.json == {"error": "Too many files"}
+
+
+def test_real_api_rejects_zero_byte_archive_for_list_and_extract(real_client):
+    for route in ("/api/list", "/api/extract"):
+        response = real_client.post(
+            route,
+            data={"file": (BytesIO(b""), "empty.zip")},
+            content_type="multipart/form-data",
+        )
+        assert response.status_code == 400
+        assert response.json == {"error": "Invalid ZIP file"}
+
+
+def test_real_api_accepts_file_exactly_at_configured_limit(real_client):
+    real_client.application.config["MAX_FILE_SIZE"] = 3
+    response = compress_files(real_client, [("exact.txt", b"abc")])
+    with zipfile.ZipFile(BytesIO(zip_bytes(response))) as archive:
+        assert archive.read("exact.txt") == b"abc"
+
+
+def test_real_api_accepts_request_exactly_at_content_length_limit(real_client):
+    boundary = "test-boundary"
+    body = (
+        f"--{boundary}\r\n"
+        'Content-Disposition: form-data; name="files"; filename="a.txt"\r\n'
+        "Content-Type: application/octet-stream\r\n\r\n"
+        "abc\r\n"
+        f"--{boundary}--\r\n"
+    ).encode()
+    real_client.application.config["MAX_CONTENT_LENGTH"] = len(body)
+    accepted = real_client.post(
+        "/api/compress", data=body,
+        content_type=f"multipart/form-data; boundary={boundary}",
+    )
+    assert accepted.status_code == 200, accepted.get_data(as_text=True)
+
+    real_client.application.config["MAX_CONTENT_LENGTH"] = len(body) - 1
+    rejected = real_client.post(
+        "/api/compress", data=body,
+        content_type=f"multipart/form-data; boundary={boundary}",
+    )
+    assert rejected.status_code == 413
+    assert rejected.json == {"error": "Request exceeds the upload size limit"}
+
+
+def test_real_api_cleans_list_workspace_after_success(real_client, monkeypatch):
+    import tempfile
+
+    original_factory = tempfile.TemporaryDirectory
+    workspaces = []
+
+    def tracked_temp_directory(*args, **kwargs):
+        directory = original_factory(*args, **kwargs)
+        workspaces.append(Path(directory.name))
+        return directory
+
+    monkeypatch.setattr(tempfile, "TemporaryDirectory", tracked_temp_directory)
+    compressed = compress_files(real_client, [("listed.txt", b"list cleanup")])
+    response = real_client.post(
+        "/api/list",
+        data={"file": (BytesIO(zip_bytes(compressed)), "list.zip")},
+        content_type="multipart/form-data",
+    )
+    assert response.status_code == 200
+    assert response.json["files"] == ["listed.txt"]
+    assert workspaces
+    assert all(not workspace.exists() for workspace in workspaces)
+
+
+def test_real_api_cleans_extract_workspace_after_success(real_client, monkeypatch):
+    import tempfile
+
+    original_factory = tempfile.TemporaryDirectory
+    workspaces = []
+
+    def tracked_temp_directory(*args, **kwargs):
+        directory = original_factory(*args, **kwargs)
+        workspaces.append(Path(directory.name))
+        return directory
+
+    monkeypatch.setattr(tempfile, "TemporaryDirectory", tracked_temp_directory)
+    compressed = compress_files(real_client, [("extract.txt", b"extract cleanup")])
+    response = real_client.post(
+        "/api/extract",
+        data={"file": (BytesIO(zip_bytes(compressed)), "extract.zip")},
+        content_type="multipart/form-data",
+    )
+    assert response.status_code == 200
+    with zipfile.ZipFile(BytesIO(response.get_data())) as archive:
+        assert archive.read("extract.txt") == b"extract cleanup"
+    assert workspaces
+    assert all(not workspace.exists() for workspace in workspaces)
+
+
+def test_real_api_cleans_workspace_after_executable_failure(real_client, monkeypatch):
+    import tempfile
+    import backend.app as backend_app
+
+    original_factory = tempfile.TemporaryDirectory
+    workspaces = []
+
+    def tracked_temp_directory(*args, **kwargs):
+        directory = original_factory(*args, **kwargs)
+        workspaces.append(Path(directory.name))
+        return directory
+
+    monkeypatch.setattr(tempfile, "TemporaryDirectory", tracked_temp_directory)
+    monkeypatch.setattr(
+        backend_app.subprocess, "run",
+        lambda *args, **kwargs: subprocess.CompletedProcess(
+            args=args[0], returncode=1, stdout="", stderr="synthetic executable failure"
+        ),
+    )
+    response = compress_files(real_client, [("failure.txt", b"failure")])
+    assert response.status_code == 500
+    assert response.json == {"error": "synthetic executable failure"}
+    assert workspaces
+    assert all(not workspace.exists() for workspace in workspaces)
+
+
+def test_real_api_cleans_workspace_after_executable_timeout(real_client, monkeypatch):
+    import tempfile
+    import backend.app as backend_app
+
+    original_factory = tempfile.TemporaryDirectory
+    workspaces = []
+
+    def tracked_temp_directory(*args, **kwargs):
+        directory = original_factory(*args, **kwargs)
+        workspaces.append(Path(directory.name))
+        return directory
+
+    def timeout(*args, **kwargs):
+        raise subprocess.TimeoutExpired(args[0], timeout=0.01)
+
+    monkeypatch.setattr(tempfile, "TemporaryDirectory", tracked_temp_directory)
+    monkeypatch.setattr(backend_app.subprocess, "run", timeout)
+    response = compress_files(real_client, [("timeout.txt", b"timeout")])
+    assert response.status_code == 500
+    assert response.json == {"error": "Compression operation timed out"}
+    assert workspaces
+    assert all(not workspace.exists() for workspace in workspaces)
