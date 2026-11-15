@@ -245,14 +245,14 @@ def test_real_api_rejects_zero_byte_archive_for_list_and_extract(real_client):
         assert response.json == {"error": "Invalid ZIP file"}
 
 
-def test_real_api_accepts_file_exactly_at_configured_limit(real_client):
-    real_client.application.config["MAX_FILE_SIZE"] = 3
+def test_real_api_accepts_file_exactly_at_configured_limit(real_client, monkeypatch):
+    monkeypatch.setitem(real_client.application.config, "MAX_FILE_SIZE", 3)
     response = compress_files(real_client, [("exact.txt", b"abc")])
     with zipfile.ZipFile(BytesIO(zip_bytes(response))) as archive:
         assert archive.read("exact.txt") == b"abc"
 
 
-def test_real_api_accepts_request_exactly_at_content_length_limit(real_client):
+def test_real_api_accepts_request_exactly_at_content_length_limit(real_client, monkeypatch):
     boundary = "test-boundary"
     body = (
         f"--{boundary}\r\n"
@@ -261,14 +261,14 @@ def test_real_api_accepts_request_exactly_at_content_length_limit(real_client):
         "abc\r\n"
         f"--{boundary}--\r\n"
     ).encode()
-    real_client.application.config["MAX_CONTENT_LENGTH"] = len(body)
+    monkeypatch.setitem(real_client.application.config, "MAX_CONTENT_LENGTH", len(body))
     accepted = real_client.post(
         "/api/compress", data=body,
         content_type=f"multipart/form-data; boundary={boundary}",
     )
     assert accepted.status_code == 200, accepted.get_data(as_text=True)
 
-    real_client.application.config["MAX_CONTENT_LENGTH"] = len(body) - 1
+    monkeypatch.setitem(real_client.application.config, "MAX_CONTENT_LENGTH", len(body) - 1)
     rejected = real_client.post(
         "/api/compress", data=body,
         content_type=f"multipart/form-data; boundary={boundary}",
