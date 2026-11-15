@@ -121,3 +121,11 @@ def test_real_executable_accepts_an_empty_file(real_client):
     with zipfile.ZipFile(BytesIO(zip_bytes(extracted))) as archive:
         assert archive.namelist() == ["empty.txt"]
         assert archive.read("empty.txt") == b""
+
+
+def test_real_executable_uses_requested_archive_name(real_client):
+    response = compress_files(
+        real_client, [("named.txt", b"custom archive")], archive_name="custom-output.zip"
+    )
+    zip_bytes(response)
+    assert 'filename="custom-output.zip"' in response.headers["Content-Disposition"]
