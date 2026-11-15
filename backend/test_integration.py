@@ -144,3 +144,29 @@ def test_real_executable_round_trips_nested_upload_paths(real_client):
     with zipfile.ZipFile(BytesIO(zip_bytes(extracted))) as archive:
         assert "reports/2026/summary.txt" in archive.namelist()
         assert archive.read("reports/2026/summary.txt") == original
+
+
+
+def test_real_api_rejects_duplicate_uploaded_names(real_client):
+    response = compress_files(
+        real_client, [("same.txt", b"first"), ("same.txt", b"second")]
+    )
+    assert response.status_code == 400
+    assert response.json == {"error": "Duplicate uploaded filename"}
+
+
+def test_real_api_rejects_non_zip_content_for_list_and_extract(real_client):
+    listed = real_client.post(
+        "/api/list",
+        data={"file": (BytesIO(b"not a ZIP archive"), "invalid.zip")},
+        content_type="multipart/form-data",
+    )
+    extracted = real_client.post(
+        "/api/extract",
+        data={"file": (BytesIO(b"not a ZIP archive"), "invalid.zip")},
+        content_type="multipart/form-data",
+    )
+    assert listed.status_code == 400
+    assert extracted.status_code == 400
+    assert listed.json == {"error": "Invalid ZIP file"}
+    assert extracted.json == {"error": "Invalid ZIP file"}
