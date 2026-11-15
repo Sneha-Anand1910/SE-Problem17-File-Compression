@@ -16,7 +16,9 @@ contents must not be treated as unsupported solely because of their
 extension or MIME type.
 
 Existing coverage is referenced where relevant to avoid duplicating automated
-tests. The Actual result field is intentionally blank for every case.
+tests. Actual results are recorded for executed cases; cases that were not
+executed or are only partially covered are explicitly marked as Blocked or
+Partially Passed.
 
 ## SEC-UPLOAD-01 — Upload validation and unsupported archive
 
@@ -284,6 +286,6 @@ tests. The Actual result field is intentionally blank for every case.
   5. Confirm all intermediate files remain in disposable temporary storage.
 - **Expected result:** The real executable is invoked, response formats match
   the current route contract, and round-trip data is identical.
-- **Actual result:** In addition to the previously recorded manual real-binary run, the automated `backend/test_integration.py` suite now builds the real executable with CMake and invokes it through Flask. It verifies successful Compress, List, and Extract requests, byte-for-byte text and binary round-trips, empty-file preservation, and nested upload paths. The PR CI run completed with 21 backend tests passing.
+- **Actual result:** In addition to the previously recorded manual real-binary run, the automated `backend/test_integration.py` suite now builds the real executable with CMake and invokes it through Flask. It verifies successful Compress, List, and Extract requests, byte-for-byte text and binary round-trips, empty-file preservation, and nested upload paths. The PR CI run completed with 28 backend tests passing and 1/1 registered C++ tests passing.
 - **Status:** Passed
 - **Existing coverage:** `backend/test_integration.py` provides automated real-executable route integration coverage; `backend/test_app.py` continues to cover helper and validation behavior.
