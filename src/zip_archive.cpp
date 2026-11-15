@@ -4,17 +4,33 @@
 #include <zlib.h>
 
 #include <algorithm>
+#include <atomic>
 #include <cctype>
 #include <cstdint>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
 #include <limits>
 #include <map>
+#include <random>
 #include <set>
 #include <stdexcept>
 #include <string>
 #include <vector>
+
+#ifdef _WIN32
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#else
+#include <cerrno>
+#include <fcntl.h>
+#include <sys/stat.h>
+#include <sys/types.h>
+#include <unistd.h>
+#endif
 
 namespace ziptool {
 namespace {
@@ -25,6 +41,24 @@ constexpr std::uint32_t END_SIG = 0x06054b50;
 constexpr std::uint16_t ZIP_VERSION = 20;
 constexpr std::uint16_t METHOD_STORE = 0;
 constexpr std::uint16_t METHOD_DEFLATE = 8;
+
+#ifdef ZIPTOOL_ENABLE_TEST_HOOKS
+ExtractionTestHook extraction_test_hook = nullptr;
+#endif
+
+std::filesystem::file_status no_follow_status(
+    const std::filesystem::path& path);
+
+std::filesystem::path unique_sibling_name(const char* prefix) {
+    static const std::uint64_t nonce = [] {
+        std::random_device random;
+        return (static_cast<std::uint64_t>(random()) << 32) ^ random();
+    }();
+    static std::atomic<unsigned long long> sequence{0};
+    return std::filesystem::path(
+        std::string(prefix) + std::to_string(nonce) + "-" +
+        std::to_string(sequence.fetch_add(1)) + ".tmp");
+}
 
 void write_u16(std::ostream& out, std::uint16_t value) {
     const char bytes[2] = {
@@ -66,25 +100,647 @@ void ensure_u32(std::uint64_t value, const char* label) {
     }
 }
 
-std::vector<std::uint8_t> read_file(const std::filesystem::path& path) {
-    std::ifstream in(path, std::ios::binary);
-    if (!in) throw std::runtime_error("Cannot open input file: " + path.string());
-
-    in.seekg(0, std::ios::end);
-    const auto size = in.tellg();
-    if (size < 0) throw std::runtime_error("Cannot determine file size: " + path.string());
-    in.seekg(0, std::ios::beg);
-
-    std::vector<std::uint8_t> data(static_cast<std::size_t>(size));
-    if (!data.empty()) {
-        in.read(reinterpret_cast<char*>(data.data()),
-                static_cast<std::streamsize>(data.size()));
+#ifdef _WIN32
+class NativeHandle {
+public:
+    explicit NativeHandle(HANDLE value = INVALID_HANDLE_VALUE) : value_(value) {}
+    ~NativeHandle() {
+        if (value_ != INVALID_HANDLE_VALUE) CloseHandle(value_);
     }
-    if (!in && !data.empty()) {
-        throw std::runtime_error("Failed while reading: " + path.string());
+
+    NativeHandle(const NativeHandle&) = delete;
+    NativeHandle& operator=(const NativeHandle&) = delete;
+    NativeHandle(NativeHandle&& other) noexcept : value_(other.value_) {
+        other.value_ = INVALID_HANDLE_VALUE;
+    }
+    NativeHandle& operator=(NativeHandle&& other) noexcept {
+        if (this != &other) {
+            if (value_ != INVALID_HANDLE_VALUE) CloseHandle(value_);
+            value_ = other.value_;
+            other.value_ = INVALID_HANDLE_VALUE;
+        }
+        return *this;
+    }
+
+    HANDLE get() const { return value_; }
+
+private:
+    HANDLE value_;
+};
+
+std::string windows_error(const std::string& operation,
+                          const std::filesystem::path& path) {
+    return operation + ": " + path.string() + " (Windows error " +
+           std::to_string(GetLastError()) + ")";
+}
+
+void validate_windows_directory(HANDLE handle,
+                                const std::filesystem::path& path) {
+    BY_HANDLE_FILE_INFORMATION info{};
+    if (!GetFileInformationByHandle(handle, &info)) {
+        throw std::runtime_error(windows_error("Cannot inspect directory", path));
+    }
+    if ((info.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) != 0) {
+        throw std::runtime_error(
+            "Reparse points are not allowed in filesystem paths: " +
+            path.string());
+    }
+    if ((info.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) == 0) {
+        throw std::runtime_error(
+            "Filesystem path component is not a directory: " + path.string());
+    }
+}
+
+std::vector<NativeHandle> open_windows_directories(
+    const std::filesystem::path& root,
+    const std::filesystem::path& relative,
+    bool create_missing) {
+    constexpr DWORD share_mode = FILE_SHARE_READ | FILE_SHARE_WRITE;
+    constexpr DWORD open_flags =
+        FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT;
+
+    std::vector<NativeHandle> handles;
+    auto current = root.root_path();
+    if (current.empty()) {
+        throw std::runtime_error("Filesystem root is not absolute: " + root.string());
+    }
+
+    auto open_directory = [&](const std::filesystem::path& path,
+                              bool allow_create) {
+        if (create_missing && allow_create &&
+            !CreateDirectoryW(path.c_str(), nullptr)) {
+            const auto error = GetLastError();
+            if (error != ERROR_ALREADY_EXISTS) {
+                throw std::runtime_error(windows_error(
+                    "Cannot create extraction directory", path));
+            }
+        }
+
+        NativeHandle handle(CreateFileW(
+            path.c_str(), FILE_READ_ATTRIBUTES, share_mode, nullptr,
+            OPEN_EXISTING, open_flags, nullptr));
+        if (handle.get() == INVALID_HANDLE_VALUE) {
+            throw std::runtime_error(
+                windows_error("Cannot securely open directory", path));
+        }
+        validate_windows_directory(handle.get(), path);
+        handles.push_back(std::move(handle));
+    };
+
+    open_directory(current, false);
+    for (const auto& part : root.relative_path()) {
+        if (part == L".") continue;
+        current /= part;
+        open_directory(current, true);
+    }
+    for (const auto& part : relative) {
+        if (part == L".") continue;
+        current /= part;
+        open_directory(current, true);
+    }
+    return handles;
+}
+
+std::vector<std::uint8_t> read_file_no_follow(
+    const std::filesystem::path& root,
+    const std::filesystem::path& relative) {
+    auto directories = open_windows_directories(
+        root, relative.parent_path(), false);
+    const auto path = root / relative;
+    NativeHandle file(CreateFileW(
+        path.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING,
+        FILE_FLAG_OPEN_REPARSE_POINT, nullptr));
+    if (file.get() == INVALID_HANDLE_VALUE) {
+        throw std::runtime_error(windows_error("Cannot securely open input file", path));
+    }
+
+    BY_HANDLE_FILE_INFORMATION info{};
+    if (!GetFileInformationByHandle(file.get(), &info)) {
+        throw std::runtime_error(windows_error("Cannot inspect input file", path));
+    }
+    if ((info.dwFileAttributes &
+         (FILE_ATTRIBUTE_REPARSE_POINT | FILE_ATTRIBUTE_DIRECTORY |
+          FILE_ATTRIBUTE_DEVICE)) != 0 ||
+        GetFileType(file.get()) != FILE_TYPE_DISK) {
+        throw std::runtime_error(
+            "Input is not a regular file or is a reparse point: " + path.string());
+    }
+
+    LARGE_INTEGER size{};
+    if (!GetFileSizeEx(file.get(), &size) || size.QuadPart < 0 ||
+        static_cast<unsigned long long>(size.QuadPart) >
+            std::numeric_limits<std::size_t>::max()) {
+        throw std::runtime_error("Cannot determine input file size: " + path.string());
+    }
+
+    std::vector<std::uint8_t> data(static_cast<std::size_t>(size.QuadPart));
+    std::size_t offset = 0;
+    while (offset < data.size()) {
+        const auto count = static_cast<DWORD>(
+            (std::min)(data.size() - offset,
+                       static_cast<std::size_t>(std::numeric_limits<DWORD>::max())));
+        DWORD read = 0;
+        if (!ReadFile(file.get(), data.data() + offset, count, &read, nullptr) ||
+            read == 0) {
+            throw std::runtime_error("Failed while reading: " + path.string());
+        }
+        offset += read;
     }
     return data;
 }
+
+std::filesystem::path stage_file_no_follow(
+    const std::filesystem::path& root,
+    const std::filesystem::path& relative,
+    const std::vector<std::uint8_t>& data) {
+    auto directories = open_windows_directories(
+        root, relative.parent_path(), true);
+    const auto path = root / relative;
+    const auto temp_name = unique_sibling_name(".extract-");
+    const auto temp = path.parent_path() / temp_name;
+    NativeHandle file(CreateFileW(
+        temp.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_NEW,
+        FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OPEN_REPARSE_POINT, nullptr));
+    if (file.get() == INVALID_HANDLE_VALUE) {
+        throw std::runtime_error(windows_error(
+            "Cannot create temporary extraction file", temp));
+    }
+
+    try {
+        std::size_t offset = 0;
+        while (offset < data.size()) {
+            const auto count = static_cast<DWORD>(
+                (std::min)(data.size() - offset,
+                           static_cast<std::size_t>(
+                               std::numeric_limits<DWORD>::max())));
+            DWORD written = 0;
+            if (!WriteFile(file.get(), data.data() + offset, count,
+                           &written, nullptr) || written == 0) {
+                throw std::runtime_error(
+                    "Failed while staging extracted file: " + path.string());
+            }
+            offset += written;
+        }
+        file = NativeHandle();
+        return temp_name;
+    } catch (...) {
+        file = NativeHandle();
+        DeleteFileW(temp.c_str());
+        throw;
+    }
+}
+
+std::filesystem::path backup_existing_file(
+    const std::filesystem::path& root,
+    const std::filesystem::path& relative,
+    bool overwrite) {
+    auto directories = open_windows_directories(
+        root, relative.parent_path(), false);
+    const auto path = root / relative;
+    const auto existing = no_follow_status(path);
+    if (existing.type() == std::filesystem::file_type::symlink) {
+        throw std::runtime_error(
+            "Refusing to overwrite a symbolic link: " + path.string());
+    }
+    if (existing.type() != std::filesystem::file_type::not_found) {
+        if (!std::filesystem::is_regular_file(existing)) {
+            throw std::runtime_error(
+                "Extraction target is not a regular file: " + path.string());
+        }
+        if (!overwrite) {
+            throw std::runtime_error(
+                "File already exists. Use --yes to overwrite: " + path.string());
+        }
+        {
+            NativeHandle target(CreateFileW(
+                path.c_str(), FILE_READ_ATTRIBUTES,
+                FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_EXISTING,
+                FILE_FLAG_OPEN_REPARSE_POINT, nullptr));
+            BY_HANDLE_FILE_INFORMATION info{};
+            if (target.get() == INVALID_HANDLE_VALUE ||
+                !GetFileInformationByHandle(target.get(), &info)) {
+                throw std::runtime_error(windows_error(
+                    "Cannot inspect extraction target", path));
+            }
+            if ((info.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) != 0 ||
+                info.nNumberOfLinks > 1) {
+                throw std::runtime_error(
+                    "Refusing to overwrite a reparse point or hard-linked file: " +
+                    path.string());
+            }
+        }
+
+        const auto backup_name = unique_sibling_name(".backup-");
+        const auto backup = path.parent_path() / backup_name;
+        if (!MoveFileExW(path.c_str(), backup.c_str(), MOVEFILE_WRITE_THROUGH)) {
+            throw std::runtime_error(
+                windows_error("Cannot preserve existing extraction target", path));
+        }
+        return backup_name;
+    }
+    return {};
+}
+
+void publish_file_no_follow(const std::filesystem::path& root,
+                            const std::filesystem::path& relative,
+                            const std::filesystem::path& temp_name,
+                            bool& published) {
+    auto directories = open_windows_directories(
+        root, relative.parent_path(), false);
+    const auto path = root / relative;
+    const auto temp = path.parent_path() / temp_name;
+    if (!MoveFileExW(temp.c_str(), path.c_str(), MOVEFILE_WRITE_THROUGH)) {
+        throw std::runtime_error(
+            windows_error("Cannot publish extracted file", path));
+    }
+    published = true;
+}
+
+bool remove_published_file(const std::filesystem::path& root,
+                           const std::filesystem::path& relative) noexcept {
+    try {
+        auto directories = open_windows_directories(
+            root.root_path(),
+            root.relative_path() / relative.parent_path(), false);
+        (void)directories;
+        return DeleteFileW((root / relative).c_str()) != 0 ||
+               GetLastError() == ERROR_FILE_NOT_FOUND;
+    } catch (...) {
+        return false;
+    }
+}
+
+bool restore_backup_file(const std::filesystem::path& root,
+                         const std::filesystem::path& relative,
+                         const std::filesystem::path& backup_name) noexcept {
+    try {
+        auto directories = open_windows_directories(
+            root.root_path(),
+            root.relative_path() / relative.parent_path(), false);
+        (void)directories;
+        const auto target = root / relative;
+        const auto backup = target.parent_path() / backup_name;
+        return MoveFileExW(
+            backup.c_str(), target.c_str(), MOVEFILE_WRITE_THROUGH) != 0;
+    } catch (...) {
+        return false;
+    }
+}
+
+bool discard_backup_file(const std::filesystem::path& root,
+                         const std::filesystem::path& relative,
+                         const std::filesystem::path& backup_name) noexcept {
+    try {
+        auto directories = open_windows_directories(
+            root.root_path(),
+            root.relative_path() / relative.parent_path(), false);
+        (void)directories;
+        const auto backup = (root / relative).parent_path() / backup_name;
+        return DeleteFileW(backup.c_str()) != 0 ||
+               GetLastError() == ERROR_FILE_NOT_FOUND;
+    } catch (...) {
+        return false;
+    }
+}
+
+bool remove_staged_file(const std::filesystem::path& root,
+                        const std::filesystem::path& relative,
+                        const std::filesystem::path& temp_name) noexcept {
+    try {
+        auto directories = open_windows_directories(
+            root.root_path(),
+            root.relative_path() / relative.parent_path(), false);
+        (void)directories;
+        const auto temp = (root / relative).parent_path() / temp_name;
+        return DeleteFileW(temp.c_str()) != 0 ||
+               GetLastError() == ERROR_FILE_NOT_FOUND;
+    } catch (...) {
+        return false;
+    }
+}
+#else
+class FileDescriptor {
+public:
+    explicit FileDescriptor(int value = -1) : value_(value) {}
+    ~FileDescriptor() {
+        if (value_ >= 0) ::close(value_);
+    }
+
+    FileDescriptor(const FileDescriptor&) = delete;
+    FileDescriptor& operator=(const FileDescriptor&) = delete;
+    FileDescriptor(FileDescriptor&& other) noexcept : value_(other.value_) {
+        other.value_ = -1;
+    }
+    FileDescriptor& operator=(FileDescriptor&& other) noexcept {
+        if (this != &other) {
+            if (value_ >= 0) ::close(value_);
+            value_ = other.value_;
+            other.value_ = -1;
+        }
+        return *this;
+    }
+
+    int get() const { return value_; }
+
+private:
+    int value_;
+};
+
+std::string posix_error(const std::string& operation,
+                        const std::filesystem::path& path) {
+    return operation + ": " + path.string() + " (" + std::strerror(errno) + ")";
+}
+
+std::vector<FileDescriptor> open_posix_directories(
+    const std::filesystem::path& root,
+    const std::filesystem::path& relative,
+    bool create_missing) {
+    std::vector<FileDescriptor> descriptors;
+    int root_fd = ::open("/", O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
+    if (root_fd < 0) {
+        throw std::runtime_error(posix_error("Cannot securely open filesystem root", root));
+    }
+    descriptors.emplace_back(root_fd);
+
+    auto open_component = [&](const std::filesystem::path& part) {
+        if (part.empty() || part == "." || part == "/") return;
+        const auto& parent = descriptors.back();
+        int next = ::openat(parent.get(), part.c_str(),
+                            O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
+        if (next < 0 && errno == ENOENT && create_missing) {
+            if (::mkdirat(parent.get(), part.c_str(), 0777) < 0 && errno != EEXIST) {
+                throw std::runtime_error(posix_error(
+                    "Cannot create extraction directory", root / relative));
+            }
+            next = ::openat(parent.get(), part.c_str(),
+                            O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
+        }
+        if (next < 0) {
+            throw std::runtime_error(posix_error(
+                "Cannot securely open directory", root / relative));
+        }
+        descriptors.emplace_back(next);
+    };
+
+    for (const auto& part : root.relative_path()) {
+        open_component(part);
+    }
+    for (const auto& part : relative) {
+        open_component(part);
+    }
+    return descriptors;
+}
+
+std::vector<FileDescriptor> open_posix_relative_directories(
+    int root_fd,
+    const std::filesystem::path& relative,
+    bool create_missing) {
+    std::vector<FileDescriptor> descriptors;
+    const int first = ::dup(root_fd);
+    if (first < 0) {
+        throw std::runtime_error(
+            posix_error("Cannot duplicate extraction root handle", "."));
+    }
+    descriptors.emplace_back(first);
+
+    for (const auto& part : relative) {
+        if (part.empty() || part == ".") continue;
+        const auto& parent = descriptors.back();
+        int next = ::openat(parent.get(), part.c_str(),
+                            O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
+        if (next < 0 && errno == ENOENT && create_missing) {
+            if (::mkdirat(parent.get(), part.c_str(), 0777) < 0 &&
+                errno != EEXIST) {
+                throw std::runtime_error(posix_error(
+                    "Cannot create extraction directory", relative));
+            }
+            next = ::openat(parent.get(), part.c_str(),
+                            O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
+        }
+        if (next < 0) {
+            throw std::runtime_error(posix_error(
+                "Cannot securely open directory", relative));
+        }
+        descriptors.emplace_back(next);
+    }
+    return descriptors;
+}
+
+std::vector<std::uint8_t> read_file_no_follow(
+    const std::filesystem::path& root,
+    const std::filesystem::path& relative) {
+    auto directories = open_posix_directories(
+        root, relative.parent_path(), false);
+    const auto& parent = directories.back();
+    const auto path = root / relative;
+    FileDescriptor file(::openat(
+        parent.get(), relative.filename().c_str(),
+        O_RDONLY | O_NOFOLLOW | O_CLOEXEC | O_NONBLOCK));
+    if (file.get() < 0) {
+        throw std::runtime_error(posix_error("Cannot securely open input file", path));
+    }
+
+    struct stat info{};
+    if (::fstat(file.get(), &info) < 0 || !S_ISREG(info.st_mode) ||
+        info.st_size < 0 ||
+        static_cast<unsigned long long>(info.st_size) >
+            std::numeric_limits<std::size_t>::max()) {
+        throw std::runtime_error("Input is not a regular file: " + path.string());
+    }
+
+    std::vector<std::uint8_t> data(static_cast<std::size_t>(info.st_size));
+    std::size_t offset = 0;
+    while (offset < data.size()) {
+        const auto count = (std::min)(
+            data.size() - offset,
+            static_cast<std::size_t>(std::numeric_limits<ssize_t>::max()));
+        const auto read = ::read(file.get(), data.data() + offset, count);
+        if (read < 0 && errno == EINTR) continue;
+        if (read <= 0) {
+            throw std::runtime_error("Failed while reading: " + path.string());
+        }
+        offset += static_cast<std::size_t>(read);
+    }
+    return data;
+}
+
+std::filesystem::path stage_file_no_follow(
+    int root_fd,
+    const std::filesystem::path& relative,
+    const std::vector<std::uint8_t>& data) {
+    auto directories = open_posix_relative_directories(
+        root_fd, relative.parent_path(), true);
+    const auto& parent = directories.back();
+    const auto path = relative;
+    const auto temp_name = unique_sibling_name(".extract-");
+    FileDescriptor file(::openat(
+        parent.get(), temp_name.c_str(),
+        O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0600));
+    if (file.get() < 0) {
+        throw std::runtime_error(
+            posix_error("Cannot create temporary extraction file", path));
+    }
+
+    try {
+        std::size_t offset = 0;
+        while (offset < data.size()) {
+            const auto count = (std::min)(
+                data.size() - offset,
+                static_cast<std::size_t>(std::numeric_limits<ssize_t>::max()));
+            const auto written = ::write(
+                file.get(), data.data() + offset, count);
+            if (written < 0 && errno == EINTR) continue;
+            if (written <= 0) {
+                throw std::runtime_error(
+                    posix_error("Failed while staging extracted file", path));
+            }
+            offset += static_cast<std::size_t>(written);
+        }
+        file = FileDescriptor();
+        return temp_name;
+    } catch (...) {
+        ::unlinkat(parent.get(), temp_name.c_str(), 0);
+        throw;
+    }
+}
+
+std::filesystem::path backup_existing_file(
+    int root_fd,
+    const std::filesystem::path& relative,
+    bool overwrite) {
+    auto directories = open_posix_relative_directories(
+        root_fd, relative.parent_path(), false);
+    const auto& parent = directories.back();
+    const auto path = relative;
+    struct stat existing{};
+    if (::fstatat(parent.get(), relative.filename().c_str(), &existing,
+                  AT_SYMLINK_NOFOLLOW) == 0) {
+        if (S_ISLNK(existing.st_mode) || !S_ISREG(existing.st_mode)) {
+            throw std::runtime_error(
+                "Extraction target is not a regular file: " + path.string());
+        }
+        if (!overwrite) {
+            throw std::runtime_error(
+                "File already exists. Use --yes to overwrite: " + path.string());
+        }
+        if (existing.st_nlink > 1) {
+            throw std::runtime_error(
+                "Refusing to overwrite a hard-linked file: " + path.string());
+        }
+        const auto backup_name = unique_sibling_name(".backup-");
+        if (::renameat(parent.get(), relative.filename().c_str(),
+                       parent.get(), backup_name.c_str()) < 0) {
+            throw std::runtime_error(
+                posix_error("Cannot preserve existing extraction target", path));
+        }
+        return backup_name;
+    } else if (errno != ENOENT) {
+        throw std::runtime_error(posix_error("Cannot inspect extraction target", path));
+    }
+
+    return {};
+}
+
+void publish_file_no_follow(int root_fd,
+                            const std::filesystem::path& relative,
+                            const std::filesystem::path& temp_name,
+                            bool& published) {
+    auto directories = open_posix_relative_directories(
+        root_fd, relative.parent_path(), false);
+    const auto& parent = directories.back();
+    const auto path = relative;
+    if (::linkat(parent.get(), temp_name.c_str(),
+                 parent.get(), relative.filename().c_str(), 0) < 0) {
+        if (errno == EEXIST) {
+            throw std::runtime_error(
+                "File already exists. Use --yes to overwrite: " + path.string());
+        }
+        throw std::runtime_error(
+            posix_error("Cannot publish extracted file", path));
+    }
+    published = true;
+    if (::unlinkat(parent.get(), temp_name.c_str(), 0) < 0) {
+        throw std::runtime_error(
+            posix_error("Cannot remove temporary extraction file", path));
+    }
+}
+
+bool remove_published_file(int root_fd,
+                           const std::filesystem::path& relative) noexcept {
+    int current = ::dup(root_fd);
+    if (current < 0) return false;
+    for (const auto& part : relative.parent_path()) {
+        const int next = ::openat(
+            current, part.c_str(),
+            O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
+        ::close(current);
+        if (next < 0) return false;
+        current = next;
+    }
+    const bool removed =
+        ::unlinkat(current, relative.filename().c_str(), 0) == 0 ||
+        errno == ENOENT;
+    ::close(current);
+    return removed;
+}
+
+bool restore_backup_file(int root_fd,
+                         const std::filesystem::path& relative,
+                         const std::filesystem::path& backup_name) noexcept {
+    int current = ::dup(root_fd);
+    if (current < 0) return false;
+    for (const auto& part : relative.parent_path()) {
+        const int next = ::openat(
+            current, part.c_str(),
+            O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
+        ::close(current);
+        if (next < 0) return false;
+        current = next;
+    }
+    const bool restored = ::renameat(
+        current, backup_name.c_str(), current, relative.filename().c_str()) == 0;
+    ::close(current);
+    return restored;
+}
+
+bool discard_backup_file(int root_fd,
+                         const std::filesystem::path& relative,
+                         const std::filesystem::path& backup_name) noexcept {
+    int current = ::dup(root_fd);
+    if (current < 0) return false;
+    for (const auto& part : relative.parent_path()) {
+        const int next = ::openat(
+            current, part.c_str(),
+            O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
+        ::close(current);
+        if (next < 0) return false;
+        current = next;
+    }
+    const bool removed =
+        ::unlinkat(current, backup_name.c_str(), 0) == 0 || errno == ENOENT;
+    ::close(current);
+    return removed;
+}
+
+bool remove_staged_file(int root_fd,
+                        const std::filesystem::path& relative,
+                        const std::filesystem::path& temp_name) noexcept {
+    int current = ::dup(root_fd);
+    if (current < 0) return false;
+    for (const auto& part : relative.parent_path()) {
+        const int next = ::openat(
+            current, part.c_str(),
+            O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
+        ::close(current);
+        if (next < 0) return false;
+        current = next;
+    }
+    const bool removed =
+        ::unlinkat(current, temp_name.c_str(), 0) == 0 || errno == ENOENT;
+    ::close(current);
+    return removed;
+}
+#endif
 
 struct Entry {
     std::string name;
@@ -328,16 +984,25 @@ void collect_path(const std::filesystem::path& path,
                   std::vector<Entry>& entries,
                   std::set<std::string>& names) {
     std::error_code ec;
-    const auto status = std::filesystem::status(path, ec);
-    if (ec || !std::filesystem::exists(status)) {
+    const auto link_status = std::filesystem::symlink_status(path, ec);
+    if (ec || !std::filesystem::exists(link_status)) {
         throw std::runtime_error(
             "Input does not exist or is inaccessible: " + path.string());
     }
 
+    if (link_status.type() == std::filesystem::file_type::symlink) {
+        throw std::runtime_error(
+            "Symbolic links are not allowed in compression inputs: " +
+            path.string());
+    }
+
+    const auto status = link_status;
     if (std::filesystem::is_directory(status)) {
-        const auto relative = std::filesystem::relative(path, base, ec);
-        if (ec) throw std::runtime_error(
-            "Unable to determine relative path for: " + path.string());
+        const auto relative = path.lexically_relative(base);
+        if (relative.empty()) {
+            throw std::runtime_error(
+                "Unable to determine relative path for: " + path.string());
+        }
 
         const auto dir_name = zip_name(relative) + "/";
         if (dir_name != "/" && names.insert(dir_name).second) {
@@ -363,9 +1028,11 @@ void collect_path(const std::filesystem::path& path,
         throw std::runtime_error("Unsupported input type: " + path.string());
     }
 
-    const auto relative = std::filesystem::relative(path, base, ec);
-    if (ec) throw std::runtime_error(
-        "Unable to determine relative path for: " + path.string());
+    const auto relative = path.lexically_relative(base);
+    if (relative.empty()) {
+        throw std::runtime_error(
+            "Unable to determine relative path for: " + path.string());
+    }
 
     const auto entry_name = zip_name(relative);
     if (!names.insert(entry_name).second) {
@@ -375,7 +1042,7 @@ void collect_path(const std::filesystem::path& path,
 
     Entry e;
     e.name = entry_name;
-    e.data = read_file(path);
+    e.data = read_file_no_follow(base, relative);
     e.crc = ::crc32(0L, Z_NULL, 0);
     if (!e.data.empty()) {
         e.crc = ::crc32(e.crc, e.data.data(),
@@ -401,27 +1068,31 @@ std::vector<Entry> build_entries(const std::vector<InputPath>& inputs) {
     std::vector<Entry> entries;
     std::set<std::string> names;
     for (const auto& item : inputs) {
-     std::error_code ec;
-     const auto abs = std::filesystem::absolute(item.path, ec);
+        std::error_code ec;
+        const auto abs = std::filesystem::absolute(item.path, ec).lexically_normal();
+        if (ec) {
+            throw std::runtime_error(
+                "Invalid input path: " + item.path.string());
+        }
 
-    if (ec) {
-        throw std::runtime_error(
-            "Invalid input path: " + item.path.string());
+        const auto link_status = std::filesystem::symlink_status(abs, ec);
+        if (ec || !std::filesystem::exists(link_status)) {
+            throw std::runtime_error(
+                "Input does not exist or is inaccessible: " +
+                item.path.string());
+        }
+        if (link_status.type() == std::filesystem::file_type::symlink) {
+            throw std::runtime_error(
+                "Symbolic links are not allowed in compression inputs: " +
+                item.path.string());
+        }
+
+        const auto base = abs.parent_path();
+        const auto selected = base / abs.filename();
+        collect_path(selected, base, entries, names);
     }
 
-    const auto status = std::filesystem::status(abs, ec);
-
-    if (ec || !std::filesystem::exists(status)) {
-        throw std::runtime_error(
-            "Input does not exist or is inaccessible: " +
-            item.path.string());
-    }
-
-    const auto base = abs.parent_path();
-    collect_path(abs, base, entries, names);
-}
-
-return entries;
+    return entries;
 
 }
 
@@ -722,6 +1393,12 @@ void write_central_entry(std::ofstream& out, const Entry& entry) {
 
 } // namespace
 
+#ifdef ZIPTOOL_ENABLE_TEST_HOOKS
+void set_extraction_test_hook(ExtractionTestHook hook) {
+    extraction_test_hook = hook;
+}
+#endif
+
 void create_archive(const std::filesystem::path& output,
                     const std::vector<InputPath>& inputs,
                     const ArchiveOptions& options) {
@@ -851,23 +1528,25 @@ void extract_archive(const std::filesystem::path& archive,
         }
     }
 
-    const auto destination_status = no_follow_status(destination);
-    if (destination_status.type() == std::filesystem::file_type::symlink) {
-        throw std::runtime_error(
-            "Extraction destination cannot be a symbolic link: " +
-            destination.string());
+    for (const auto& item : planned) {
+        if (!item.record->directory) {
+            (void)read_entry_data(in, *item.record);
+        }
     }
 
     std::error_code ec;
-    std::filesystem::create_directories(destination, ec);
+    const auto safe_root =
+        std::filesystem::absolute(destination, ec).lexically_normal();
     if (ec) throw std::runtime_error(
-        "Cannot create extraction directory: " + destination.string());
+        "Invalid extraction destination: " + destination.string());
 
-    const auto safe_root = canonicalish(destination);
-    if (!std::filesystem::is_directory(safe_root)) {
-        throw std::runtime_error(
-            "Extraction destination is not a directory: " + destination.string());
-    }
+#ifdef _WIN32
+    auto root_handles = open_windows_directories(
+        safe_root.root_path(), safe_root.relative_path(), true);
+#else
+    auto root_handles = open_posix_directories(
+        "/", safe_root.relative_path(), true);
+#endif
 
     // Check all existing paths up front so a conflict cannot leave a partial extraction.
     for (const auto& item : planned) {
@@ -882,38 +1561,136 @@ void extract_archive(const std::filesystem::path& archive,
     const auto total_files = std::count_if(
         records.begin(), records.end(),
         [](const auto& record) { return !record.directory; });
+    struct StagedFile {
+        std::size_t entry_index;
+        std::filesystem::path temporary_name;
+        std::filesystem::path backup_name;
+        bool published = false;
+    };
+    std::vector<StagedFile> staged;
+    staged.reserve(static_cast<std::size_t>(total_files));
+
+    try {
+        for (std::size_t index = 0; index < planned.size(); ++index) {
+            const auto& item = planned[index];
+            const auto& record = *item.record;
+            const auto target = (safe_root / item.relative).lexically_normal();
+            if (!starts_with_path(target, safe_root)) {
+                throw std::runtime_error(
+                    "Unsafe extraction path rejected: " + record.name);
+            }
+
+            if (record.directory) {
+#ifdef _WIN32
+                auto directory_handles = open_windows_directories(
+                    safe_root.root_path(),
+                    safe_root.relative_path() / item.relative, true);
+#else
+                auto directory_handles = open_posix_relative_directories(
+                    root_handles.back().get(), item.relative, true);
+#endif
+                (void)directory_handles;
+                continue;
+            }
+
+            auto data = read_entry_data(in, record);
+#ifdef ZIPTOOL_ENABLE_TEST_HOOKS
+            if (extraction_test_hook) {
+                extraction_test_hook(safe_root, item.relative);
+            }
+#endif
+#ifdef _WIN32
+            auto temporary_name =
+                stage_file_no_follow(safe_root, item.relative, data);
+#else
+            auto temporary_name = stage_file_no_follow(
+                root_handles.back().get(), item.relative, data);
+#endif
+            staged.push_back({index, std::move(temporary_name), {}, false});
+        }
+
+        for (auto& file : staged) {
+            const auto& item = planned[file.entry_index];
+#ifdef _WIN32
+            file.backup_name = backup_existing_file(
+                safe_root, item.relative, options.overwrite);
+            publish_file_no_follow(
+                safe_root, item.relative, file.temporary_name,
+                file.published);
+#else
+            file.backup_name = backup_existing_file(
+                root_handles.back().get(), item.relative, options.overwrite);
+            publish_file_no_follow(
+                root_handles.back().get(), item.relative,
+                file.temporary_name, file.published);
+#endif
+        }
+    } catch (...) {
+        for (auto file = staged.rbegin(); file != staged.rend(); ++file) {
+            const auto& item = planned[file->entry_index];
+            if (file->published) {
+#ifdef _WIN32
+                const bool removed = remove_published_file(
+                    safe_root, item.relative);
+#else
+                const bool removed = remove_published_file(
+                    root_handles.back().get(), item.relative);
+#endif
+                if (!removed) {
+                    std::cerr << "Warning: could not roll back extracted file "
+                              << item.record->name << "\n";
+                }
+            }
+            if (!file->backup_name.empty()) {
+#ifdef _WIN32
+                const bool restored = restore_backup_file(
+                    safe_root, item.relative, file->backup_name);
+#else
+                const bool restored = restore_backup_file(
+                    root_handles.back().get(), item.relative,
+                    file->backup_name);
+#endif
+                if (!restored) {
+                    std::cerr << "Warning: could not restore previous extraction target for "
+                              << item.record->name << "\n";
+                }
+            }
+#ifdef _WIN32
+            const bool removed = remove_staged_file(
+                safe_root, item.relative, file->temporary_name);
+#else
+            const bool removed = remove_staged_file(
+                root_handles.back().get(), item.relative,
+                file->temporary_name);
+#endif
+            if (!removed) {
+                std::cerr << "Warning: could not remove staged extraction file for "
+                          << item.record->name << "\n";
+            }
+        }
+        throw;
+    }
+
+    for (const auto& file : staged) {
+        if (file.backup_name.empty()) continue;
+        const auto& item = planned[file.entry_index];
+#ifdef _WIN32
+        const bool removed = discard_backup_file(
+            safe_root, item.relative, file.backup_name);
+#else
+        const bool removed = discard_backup_file(
+            root_handles.back().get(), item.relative, file.backup_name);
+#endif
+        if (!removed) {
+            std::cerr << "Warning: could not remove extraction backup for "
+                      << item.record->name << "\n";
+        }
+    }
+
     std::size_t extracted = 0;
-
-    for (const auto& item : planned) {
+    for (const auto& file : staged) {
+        const auto& item = planned[file.entry_index];
         const auto& record = *item.record;
-        const auto target = (safe_root / item.relative).lexically_normal();
-
-        if (!starts_with_path(target, safe_root)) {
-            throw std::runtime_error(
-                "Unsafe extraction path rejected: " + record.name);
-        }
-
-        if (record.directory) {
-            check_safe_directory(safe_root, item.relative, true);
-            continue;
-        }
-
-        check_safe_directory(safe_root, item.relative.parent_path(), true);
-        check_safe_file_target(safe_root, item.relative, options.overwrite);
-
-        auto data = read_entry_data(in, record);
-
-        std::ofstream out(target, std::ios::binary | std::ios::trunc);
-        if (!out) throw std::runtime_error(
-            "Cannot write extracted file: " + target.string());
-
-        if (!data.empty()) {
-            out.write(reinterpret_cast<const char*>(data.data()),
-                      static_cast<std::streamsize>(data.size()));
-        }
-        if (!out) throw std::runtime_error(
-            "Failed while writing extracted file: " + target.string());
-
         ++extracted;
         const double progress =
             total_files == 0 ? 100.0 :
@@ -945,4 +1722,4 @@ std::vector<std::string> list_archive(
     return result;
 }
 
-} // namespace ziptool
+} // namespace

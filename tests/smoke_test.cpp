@@ -261,7 +261,8 @@ int main() {
     } catch (const std::runtime_error&) {
         corrupt_crc_rejected = true;
     }
-    if (!corrupt_crc_rejected) {
+    if (!corrupt_crc_rejected ||
+        fs::exists(root / "corrupt_crc_output")) {
         std::cerr << "Corrupted CRC metadata validation test failed.\\n";
         return 1;
     }
@@ -379,6 +380,10 @@ int main() {
 
     if (!corruption_detected) {
         std::cerr << "Corrupted ZIP data detection test failed.\n";
+        return 1;
+    }
+    if (fs::exists(root / "corrupted_output")) {
+        std::cerr << "Corrupted ZIP created output before full validation.\n";
         return 1;
     }
 
@@ -542,6 +547,27 @@ int main() {
     ziptool::extract_archive(overwrite_archive, overwrite_output, {true});
     if (read(overwrite_output / overwrite_source.filename()) != "replacement data") {
         std::cerr << "Explicit overwrite did not replace the existing file.\n";
+        return 1;
+    }
+
+    const auto hardlink_output = root / "hardlink_output";
+    const auto hardlink_target = hardlink_output / overwrite_source.filename();
+    const auto hardlink_alias = root / "hardlink_alias.txt";
+    fs::create_directories(hardlink_output);
+    {
+        std::ofstream(hardlink_target) << "preserve linked data";
+    }
+    fs::create_hard_link(hardlink_target, hardlink_alias);
+    bool hardlink_overwrite_rejected = false;
+    try {
+        ziptool::extract_archive(overwrite_archive, hardlink_output, {true});
+    } catch (const std::runtime_error&) {
+        hardlink_overwrite_rejected = true;
+    }
+    if (!hardlink_overwrite_rejected ||
+        read(hardlink_target) != "preserve linked data" ||
+        read(hardlink_alias) != "preserve linked data") {
+        std::cerr << "Overwrite did not protect an existing hard-linked file.\n";
         return 1;
     }
 

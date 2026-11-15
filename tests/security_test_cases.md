@@ -64,21 +64,44 @@ Partially Passed.
   2. Submit the returned ZIP to `/api/list` and `/api/extract`.
   3. Separately submit a request with no required upload.
   4. Submit a zero-byte archive to `/api/list` and `/api/extract`.
-- **Expected result:** Empty ordinary input is accepted and remains zero bytes after round-trip. Missing upload and zero-byte archive inputs are rejected with an error response.
-- **Actual result:** The real-executable Flask integration suite compresses and extracts a zero-byte ordinary file and verifies the restored entry is still zero bytes. It also submits a zero-byte archive to both List and Extract; both return HTTP 400 with the Invalid ZIP file response. Missing-upload behavior is separately covered by SEC-UPLOAD-01.
+- **Expected result:** Empty ordinary input is accepted and remains zero bytes
+  after round-trip. Missing upload and zero-byte archive inputs are rejected
+  with an error response.
+- **Actual result:** A zero-byte ordinary file was accepted by `/api/compress`
+  (HTTP 200). The resulting ZIP was listed and extracted successfully
+  (HTTP 200), preserving the zero-byte file. A zero-byte archive submitted to
+  `/api/list` and `/api/extract` returned HTTP 400 (Invalid ZIP file). The
+  automated real-executable Flask integration suite also compresses and
+  extracts a zero-byte ordinary file and verifies that the restored entry is
+  still zero bytes. It submits a zero-byte archive to both routes, which
+  return HTTP 400. Missing-upload behavior is separately covered by
+  SEC-UPLOAD-01.
 - **Status:** Passed
-- **Existing coverage:** `backend/test_integration.py` covers the empty-file round-trip and zero-byte archive rejection through both routes.
+- **Existing coverage:** `backend/test_app.py` checks empty upload saving;
+  `backend/test_integration.py` covers the empty-file round-trip and zero-byte
+  archive rejection through both routes; `tests/smoke_test.cpp` checks an
+  empty-file round-trip.
 
 ## SEC-LIMIT-FILE-EXACT — File exactly at per-file limit
 
 - **Test objective:** Verify acceptance at the configured per-file size boundary.
 - **Test input:** A synthetic file exactly `MAX_FILE_SIZE` bytes.
 - **Test steps:**
-  1. Record effective `MAX_FILE_SIZE`.
-  2. Submit a file exactly equal to the configured limit to `/api/compress`.
-- **Expected result:** The per-file size check accepts it if other conditions are valid.
-- **Actual result:** Automated real-executable integration test set `MAX_FILE_SIZE` to 3 bytes and submitted a 3-byte file. The API returned HTTP 200 and the ZIP preserved all three bytes. The default 50 MiB boundary was not separately stress-tested.
-- **Status:** Passed (controlled 3-byte configuration)
+  1. Record effective `MAX_FILE_SIZE` and `MAX_CONTENT_LENGTH`.
+  2. Generate exactly the configured per-file number of synthetic bytes in
+     the test temporary directory.
+  3. POST the file to `/api/compress`.
+- **Expected result:** The per-file size check accepts the file; the request
+  succeeds if all other limits and executable prerequisites are satisfied.
+- **Actual result:** In the manual default-limit run, `MAX_FILE_SIZE` was
+  52,428,800 bytes (50 MiB). A synthetic file of exactly that size was
+  accepted by `/api/compress` with HTTP 200; `exact.zip` was 51,098 bytes.
+  Separately, the automated real-executable integration test set
+  `MAX_FILE_SIZE` to 3 bytes and submitted a 3-byte file; the API returned
+  HTTP 200 and the ZIP preserved all three bytes. The default-size result was
+  manually tested; the automated integration test used a controlled limit.
+- **Status:** Passed (manual default-limit run and automated controlled
+  3-byte configuration)
 - **Existing coverage:** `backend/test_integration.py::test_real_api_accepts_file_exactly_at_configured_limit`.
 
 ## SEC-LIMIT-FILE-OVER — File one byte above per-file limit
@@ -95,11 +118,7 @@ Partially Passed.
 - **Expected result:** The request is rejected with a client error indicating
   the file-size limit; the executable is not invoked and no archive is
   returned.
-- **Actual result:** Confirmed MAX_FILE_SIZE is 52,428,800 bytes.
-  Uploaded a synthetic file of 52,428,801 bytes (50 MiB + 1 byte) to
-  /api/compress. The API returned HTTP 400 BAD REQUEST with
-  {"error":"Uploaded file exceeds the size limit"}. No archive was returned.
-  Executable invocation was not independently monitored.
+- **Actual result:** Uploaded a synthetic file of 52,428,801 bytes (50 MiB + 1 byte) to `/api/compress`. The API returned HTTP 400 BAD REQUEST with `{"error":"Uploaded file exceeds the size limit"}`. No archive was returned. Executable invocation was not independently monitored.
 - **Status:** Passed
 - **Existing coverage:** No per-file over-limit case identified.
 
@@ -132,12 +151,24 @@ Partially Passed.
 - **Test input:** Multipart request bodies at and one byte above the configured `MAX_CONTENT_LENGTH`.
 - **Test steps:**
   1. Record effective `MAX_CONTENT_LENGTH`.
-  2. Submit a multipart request whose complete encoded body equals the configured cap.
-  3. Reduce the cap by one byte and submit the same body.
-- **Expected result:** An at-limit request is accepted; a request one byte above the cap receives HTTP 413.
-- **Actual result:** Existing manual tests confirmed the default 100 MiB cap rejects an over-limit request with HTTP 413 and accepts a below-limit request. Automated real-executable integration test accepts a multipart body at its exact configured cap and returns HTTP 413 when the cap is reduced by one byte. The default 100 MiB boundary was not separately stress-tested.
-- **Status:** Passed (controlled exact-boundary configuration)
-- **Existing coverage:** `backend/test_integration.py::test_real_api_accepts_request_exactly_at_content_length_limit` and `backend/test_app.py` oversized-request test.
+  2. Construct requests with controlled complete body lengths; account for
+     multipart boundaries and headers.
+  3. Submit each request to `/api/compress`.
+- **Expected result:** An at-limit request is not rejected solely by the
+  request-size cap. An over-limit request receives HTTP 413 and the documented
+  JSON error response.
+- **Actual result:** Confirmed `MAX_CONTENT_LENGTH` is 104,857,600 bytes
+  (100 MiB). Constructed complete multipart bodies of exactly 104,857,600
+  and 104,857,601 bytes, with both individual files below the 50 MiB limit.
+  The exact-limit request returned HTTP 200; the one-byte-over request
+  returned HTTP 413 with `{"error":"Request exceeds the upload size limit"}`.
+  Separately, the automated real-executable integration test accepts a
+  multipart body at its exact configured cap and returns HTTP 413 when the cap
+  is reduced by one byte.
+- **Status:** Passed (manual default 100 MiB boundary and automated
+  exact-boundary configuration)
+- **Existing coverage:** `backend/test_integration.py::test_real_api_accepts_request_exactly_at_content_length_limit` and
+  `backend/test_app.py` oversized-request test.
 
 ## SEC-ZIP-CORRUPT — Corrupted archive through API
 
@@ -149,15 +180,18 @@ Partially Passed.
   2. Create a separate corrupted copy by changing test data or CRC metadata.
   3. POST the corrupted copy to `/api/list` and `/api/extract`.
   4. Inspect responses and the isolated filesystem.
-- **Expected result:** The routes return an invalid-archive error; no
-  success-shaped response is returned and no unsafe output is written.
+- **Expected result:** `/api/list` may return HTTP 200 and display filenames
+  when the ZIP metadata is readable, even if entry contents are corrupted.
+  `/api/extract` must validate entry CRCs, reject the corrupted archive with
+  HTTP 400, and avoid writing extracted output.
 - **Actual result:** Created a ZIP with altered entry data. `/api/list`
   returned HTTP 200 OK with the filename metadata. `/api/extract` returned
   HTTP 400 BAD REQUEST with `{"error":"Invalid ZIP file"}`.
-  Listing does not validate the entry data CRC; extraction rejects corruption.
-- **Status:** Partially Passed
+  `/api/list` reads ZIP metadata, whereas `/api/extract` reads entry contents
+  and validates their CRC.
+- **Status:** Passed
 - **Existing coverage:** C++ CRC corruption is tested in
-  `tests/smoke_test.cpp`; Flask route behavior remains to be tested.
+  `tests/smoke_test.cpp`; the API behavior is recorded above.
 
 ## SEC-ZIP-TRUNC — Truncated archive through API
 
@@ -211,12 +245,17 @@ Partially Passed.
   3. Compress the input directory.
   4. Inspect archive entry names and contents.
 - **Expected result:** The symlink is rejected or not followed according to
-  the approved behavior; outside file contents are not included. If symlink
-  creation is unavailable, record Blocked rather than Passed.
-- **Actual result:** Blocked: Windows denied symbolic-link creation because Administrator privileges or Developer Mode are required. The test was not executed.
-- **Status:** Blocked
-- **Existing coverage:** Existing symlink tests cover extraction, not
-  symlinks encountered during compression.
+  the approved behavior; outside file contents are not included. Compression
+  now rejects symlinks explicitly. If symlink creation is unavailable, record
+  Blocked rather than Passed.
+- **Actual result:** The `SEC-COMP-SYMLINK-FILE` CTest passed in WSL/Linux with
+  an actual file symlink; compression rejected it and created no archive.
+  Windows execution was also attempted, but `CreateSymbolicLinkW` returned
+  error 1314 (required privilege not held), so that run skipped with code 77.
+- **Status:** Passed (WSL/Linux); Windows run skipped
+- **Existing coverage:** `tests/security_test.cpp` registers this as a CTest.
+  For Windows-specific validation, enable Developer Mode or symlink creation
+  privilege and rerun the CTest.
 
 ## SEC-COMP-SYMLINK-DIR — External directory symlink during compression
 
@@ -230,13 +269,18 @@ Partially Passed.
   2. Create the directory symlink if supported by the test platform.
   3. Compress the input directory.
   4. Inspect all archive entries and contents.
-- **Expected result:** The symlink is rejected or not followed according to
-  the approved behavior; no outside entry or file content is archived. If
-  symlink creation is unavailable, record Blocked rather than Passed.
-- **Actual result:** Blocked: Windows denied symbolic-link creation because Administrator privileges or Developer Mode are required. The test was not executed.
-- **Status:** Blocked
-- **Existing coverage:** Existing symlink tests cover extraction, not
-  symlinks encountered during compression.
+- **Expected result:** The symlink is rejected; no outside entry or file
+  content is archived. If symlink creation is unavailable, record Blocked
+  rather than Passed.
+- **Actual result:** The `SEC-COMP-SYMLINK-DIR` CTest passed in WSL/Linux with
+  an actual directory symlink; compression rejected it and created no
+  archive. Windows execution was also attempted, but `CreateSymbolicLinkW`
+  returned error 1314 (required privilege not held), so that run skipped with
+  code 77.
+- **Status:** Passed (WSL/Linux); Windows run skipped
+- **Existing coverage:** `tests/security_test.cpp` registers this as a CTest.
+  For Windows-specific validation, enable Developer Mode or symlink creation
+  privilege and rerun the CTest.
 
 ## SEC-EXTRACT-RACE — Extraction path replacement race
 
@@ -250,13 +294,37 @@ Partially Passed.
      and file creation.
   3. Inspect the extraction root and outside sentinel after the operation.
 - **Expected result:** Extraction fails safely or remains within a protected
-  staging area; the outside sentinel is unchanged. Do not run against
-  uncontrolled or shared paths. A deterministic test hook may be needed for
-  reliable automation.
-- **Actual result:** Not executed. A controlled deterministic test harness is required to replace a destination component between path validation and file creation.
-- **Status:** Blocked
-- **Existing coverage:** Existing extraction symlink tests cover pre-existing
-  links, not replacement between validation and file open.
+  staging area; the outside sentinel is unchanged. POSIX extraction uses
+  directory-handle-relative operations. Do not run against uncontrolled or
+  shared paths. A deterministic test hook may be needed for reliable
+  automation.
+- **Actual result:** The `SEC-EXTRACT-RACE` CTest passed in WSL/Linux. The
+  deterministic hook replaced a checked parent with a directory symlink;
+  extraction rejected it, and the outside sentinel remained unchanged with
+  no payload file created outside. The same test also forces a hard-linked
+  conflict during publication after one file is published; rollback removed
+  the new output and restored the previous contents. Windows retains
+  directory handles, but some staging, backup, publication, and rollback
+  operations still use full paths; therefore an attacker replacing an
+  intermediate directory is not reliably prevented by the current Windows
+  implementation. The Windows ancestor-directory race has not been
+  successfully exercised or shown to be prevented. Native Windows CTest
+  skipped the symlink-race portion because symlink setup returned error 1314
+  (required privilege not held); this was a skip, not a test failure. The
+  rollback subtest was executed directly and passed before the test returned
+  skip code 77.
+- **Status:** Linux/WSL race test passed, including rollback; Windows rollback
+  subtest passed; Windows symlink-race portion skipped; Windows
+  ancestor-directory race remains unresolved
+- **Existing coverage:** `tests/security_test.cpp` registers a deterministic
+  replacement test using a test-only hook. It has passed on Linux/WSL only.
+  On Windows, enable Developer Mode or symlink creation privilege to run the
+  symlink-based case; even then, this test does not establish race-free
+  handle-relative Windows operations. Future work is to open each child
+  relative to its validated parent handle (for example, with
+  `NtCreateFile` and `OBJECT_ATTRIBUTES.RootDirectory`) and use
+  `SetFileInformationByHandle` for rename and disposition operations, then
+  add a deterministic Windows ancestor-replacement test.
 
 ## SEC-TEMP-CLEANUP — Temporary-file cleanup after success and failure
 
@@ -266,10 +334,21 @@ Partially Passed.
   1. Send successful compress, extract, and list requests.
   2. Trigger invalid-archive, executable-failure, and timeout paths using controlled test configuration.
   3. Inspect the test temporary root after each response.
-- **Expected result:** Each request's temporary directory and uploaded or extracted data are removed after the response, including handled failures.
-- **Actual result:** Automated real-executable Flask tests track temporary workspaces and verify cleanup after successful Compress, List, and Extract; invalid archive input to List; a synthetic executable nonzero exit; and a synthetic subprocess timeout. Validation-failure cleanup is not separately asserted.
-- **Status:** Partially Passed
-- **Existing coverage:** `backend/test_integration.py` contains dedicated workspace-cleanup tests for the cases listed above.
+- **Expected result:** Each request's temporary directory and uploaded or
+  extracted data are removed after the response, including handled failures.
+- **Actual result:** In the manual real-executable run, Compress, List, and
+  Extract succeeded without leaving request-specific temporary directories.
+  A synthetic ZIP Slip archive, a missing-executable request, and a
+  subprocess timeout (using a short controlled timeout) also left no such
+  directories. Automated real-executable Flask tests separately verify
+  workspace cleanup after successful Compress, List, and Extract; invalid
+  archive input to List; a synthetic executable nonzero exit; and a synthetic
+  subprocess timeout. Automated validation-failure cleanup is not separately
+  asserted.
+- **Status:** Passed (manual cleanup checks); automated coverage is partial
+  because validation-failure cleanup is not separately asserted.
+- **Existing coverage:** `backend/test_integration.py` contains dedicated
+  workspace-cleanup tests for the automated cases listed above.
 
 ## SEC-REAL-API — Flask integration with real C++ executable
 
