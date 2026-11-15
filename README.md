@@ -12,6 +12,10 @@ The application can:
 - show operation progress in the console
 - prevent accidental overwrites unless confirmed
 - reject malformed archives and unsafe extraction paths
+- reject symbolic links during compression and reject reparse points in
+  extraction paths
+- validate archive contents before extraction, stage output before publishing,
+  and refuse to overwrite hard-linked files
 - verify extracted data with CRC-32
 - report basic Huffman coding statistics during compression
 
@@ -36,7 +40,11 @@ Use CMake with a C++17 compiler and a zlib installation. The same CMake targets 
 ```text
 file-compress
 smoke_test
+security_test
 ```
+
+Test executables are built and registered with CTest when `BUILD_TESTING` is
+enabled (the default). Use `-DBUILD_TESTING=OFF` for a production-only build.
 
 ## Run
 
@@ -47,6 +55,17 @@ file-compress extract sample.zip extracted/
 ```
 
 Add `--yes` to allow overwriting an existing archive or extracted file.
+During extraction, `--yes` atomically replaces regular, single-linked files;
+symbolic links, reparse points, and hard-linked targets are rejected. POSIX
+extraction uses directory-handle-relative operations; the existing Linux
+security tests pass. On Windows, directory handles are retained, but some
+staging, backup, publication, and rollback operations still use full paths.
+The Windows ancestor-directory replacement race is therefore not yet
+reliably prevented, and complete Windows race protection is not claimed. A
+future fix should use native handle-relative operations, such as `NtCreateFile`
+with `OBJECT_ATTRIBUTES.RootDirectory` and `SetFileInformationByHandle` for
+rename and disposition operations. If a publish step fails,
+already-published files are rolled back where the filesystem permits.
 
 Running `file-compress` without arguments opens a simple interactive menu.
 

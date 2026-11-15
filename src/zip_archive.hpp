@@ -28,4 +28,12 @@ void extract_archive(const std::filesystem::path& archive,
 
 std::vector<std::string> list_archive(const std::filesystem::path& archive);
 
+#ifdef ZIPTOOL_ENABLE_TEST_HOOKS
+using ExtractionTestHook = void (*)(
+    const std::filesystem::path&,
+    const std::filesystem::path&);
+
+void set_extraction_test_hook(ExtractionTestHook hook);
+#endif
+
 } // namespace ziptool

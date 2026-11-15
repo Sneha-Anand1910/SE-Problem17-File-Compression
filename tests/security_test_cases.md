@@ -145,12 +145,11 @@ tests. Actual results and execution statuses are recorded for each test case.
   request-size cap. An over-limit request receives HTTP 413 and the documented
   JSON error response.
 - **Actual result:** Confirmed `MAX_CONTENT_LENGTH` is 104,857,600 bytes
-  (100 MiB). Created two files of 52,428,800 bytes each and submitted
-  them together to `/api/compress`. The multipart request exceeded the
-  total request limit and returned HTTP 413 REQUEST ENTITY TOO LARGE
-  with `{"error":"Request exceeds the upload size limit"}`.
-  A separate request containing two 51,380,224-byte files (49 MiB each) returned HTTP 200 OK. The exact request-size boundary has not yet been tested.
-- **Status:** Partially Passed
+  (100 MiB). Constructed complete multipart bodies of exactly 104,857,600
+  and 104,857,601 bytes, with both individual files below the 50 MiB limit.
+  The exact-limit request returned HTTP 200; the one-byte-over request
+  returned HTTP 413 with `{"error":"Request exceeds the upload size limit"}`.
+- **Status:** Passed
 - **Existing coverage:** `backend/test_app.py` tests an oversized request.
   Exact-boundary behavior is not covered.
 
@@ -226,12 +225,17 @@ tests. Actual results and execution statuses are recorded for each test case.
   3. Compress the input directory.
   4. Inspect archive entry names and contents.
 - **Expected result:** The symlink is rejected or not followed according to
-  the approved behavior; outside file contents are not included. If symlink
-  creation is unavailable, record Blocked rather than Passed.
-- **Actual result:** Blocked: Windows denied symbolic-link creation because Administrator privileges or Developer Mode are required. The test was not executed.
-- **Status:** Blocked
-- **Existing coverage:** Existing symlink tests cover extraction, not
-  symlinks encountered during compression.
+  the approved behavior; outside file contents are not included. Compression
+  now rejects symlinks explicitly. If symlink creation is unavailable, record
+  Blocked rather than Passed.
+- **Actual result:** The `SEC-COMP-SYMLINK-FILE` CTest passed in WSL/Linux with
+  an actual file symlink; compression rejected it and created no archive.
+  Windows execution was also attempted, but `CreateSymbolicLinkW` returned
+  error 1314 (required privilege not held), so that run skipped with code 77.
+- **Status:** Passed (WSL/Linux); Windows run skipped
+- **Existing coverage:** `tests/security_test.cpp` registers this as a CTest.
+  For Windows-specific validation, enable Developer Mode or symlink creation
+  privilege and rerun the CTest.
 
 ## SEC-COMP-SYMLINK-DIR — External directory symlink during compression
 
@@ -245,13 +249,18 @@ tests. Actual results and execution statuses are recorded for each test case.
   2. Create the directory symlink if supported by the test platform.
   3. Compress the input directory.
   4. Inspect all archive entries and contents.
-- **Expected result:** The symlink is rejected or not followed according to
-  the approved behavior; no outside entry or file content is archived. If
-  symlink creation is unavailable, record Blocked rather than Passed.
-- **Actual result:** Blocked: Windows denied symbolic-link creation because Administrator privileges or Developer Mode are required. The test was not executed.
-- **Status:** Blocked
-- **Existing coverage:** Existing symlink tests cover extraction, not
-  symlinks encountered during compression.
+- **Expected result:** The symlink is rejected; no outside entry or file
+  content is archived. If symlink creation is unavailable, record Blocked
+  rather than Passed.
+- **Actual result:** The `SEC-COMP-SYMLINK-DIR` CTest passed in WSL/Linux with
+  an actual directory symlink; compression rejected it and created no
+  archive. Windows execution was also attempted, but `CreateSymbolicLinkW`
+  returned error 1314 (required privilege not held), so that run skipped with
+  code 77.
+- **Status:** Passed (WSL/Linux); Windows run skipped
+- **Existing coverage:** `tests/security_test.cpp` registers this as a CTest.
+  For Windows-specific validation, enable Developer Mode or symlink creation
+  privilege and rerun the CTest.
 
 ## SEC-EXTRACT-RACE — Extraction path replacement race
 
@@ -265,13 +274,37 @@ tests. Actual results and execution statuses are recorded for each test case.
      and file creation.
   3. Inspect the extraction root and outside sentinel after the operation.
 - **Expected result:** Extraction fails safely or remains within a protected
-  staging area; the outside sentinel is unchanged. Do not run against
-  uncontrolled or shared paths. A deterministic test hook may be needed for
-  reliable automation.
-- **Actual result:** Not executed. A controlled deterministic test harness is required to replace a destination component between path validation and file creation.
-- **Status:** Blocked
-- **Existing coverage:** Existing extraction symlink tests cover pre-existing
-  links, not replacement between validation and file open.
+  staging area; the outside sentinel is unchanged. POSIX extraction uses
+  directory-handle-relative operations. Do not run against uncontrolled or
+  shared paths. A deterministic test hook may be needed for reliable
+  automation.
+- **Actual result:** The `SEC-EXTRACT-RACE` CTest passed in WSL/Linux. The
+  deterministic hook replaced a checked parent with a directory symlink;
+  extraction rejected it, and the outside sentinel remained unchanged with
+  no payload file created outside. The same test also forces a hard-linked
+  conflict during publication after one file is published; rollback removed
+  the new output and restored the previous contents. Windows retains
+  directory handles, but some staging, backup, publication, and rollback
+  operations still use full paths; therefore an attacker replacing an
+  intermediate directory is not reliably prevented by the current Windows
+  implementation. The Windows ancestor-directory race has not been
+  successfully exercised or shown to be prevented. Native Windows CTest
+  skipped the symlink-race portion because symlink setup returned error 1314
+  (required privilege not held); this was a skip, not a test failure. The
+  rollback subtest was executed directly and passed before the test returned
+  skip code 77.
+- **Status:** Linux/WSL race test passed, including rollback; Windows rollback
+  subtest passed; Windows symlink-race portion skipped; Windows
+  ancestor-directory race remains unresolved
+- **Existing coverage:** `tests/security_test.cpp` registers a deterministic
+  replacement test using a test-only hook. It has passed on Linux/WSL only.
+  On Windows, enable Developer Mode or symlink creation privilege to run the
+  symlink-based case; even then, this test does not establish race-free
+  handle-relative Windows operations. Future work is to open each child
+  relative to its validated parent handle (for example, with
+  `NtCreateFile` and `OBJECT_ATTRIBUTES.RootDirectory`) and use
+  `SetFileInformationByHandle` for rename and disposition operations, then
+  add a deterministic Windows ancestor-replacement test.
 
 ## SEC-TEMP-CLEANUP — Temporary-file cleanup after success and failure
 
@@ -286,8 +319,12 @@ tests. Actual results and execution statuses are recorded for each test case.
   3. Inspect the test temporary root after each response.
 - **Expected result:** Each request's temporary directory and uploaded or
   extracted data are removed after the response, including handled failures.
-- **Actual result:** Successful compression returned HTTP 200 and invalid archive extraction returned HTTP 400. Comparison of temporary-directory entries before and after both requests found zero new temporary directories remaining. Successful list/extract, executable-failure and timeout cleanup paths were not separately tested.
-- **Status:** Partially Passed
+- **Actual result:** With the real C++ executable, API compress/list/extract
+  requests succeeded and left no request-specific temporary directories.
+  Rejected a synthetic ZIP Slip archive, a missing-executable request, and
+  a subprocess timeout (using a short controlled timeout); each also left no
+  request-specific temporary directories.
+- **Status:** Passed
 - **Existing coverage:** No explicit temporary-directory cleanup test
   identified.
 
