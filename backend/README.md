@@ -20,3 +20,22 @@ python -m backend.app
 ```
 
 The frontend can use `http://127.0.0.1:5000`; CORS is enabled for development and can be restricted with `CORS_ORIGIN`.
+
+
+## Backend API tests
+
+Run the Flask tests from the repository root:
+
+```bash
+python -m pip install -r backend/requirements.txt
+python -m pytest -q backend
+```
+
+The tests in `test_app.py` cover request validation and helper behavior with a
+stub executable. The tests in `test_integration.py` are separate: they
+configure and build the real C++ `file-compress` executable with CMake, then
+exercise the Flask compress, list, and extract endpoints through Flask's test
+client. They verify ZIP contents, round-trip bytes, nested upload paths,
+invalid archive handling, upload limits, and temporary-workspace cleanup.
+A working CMake toolchain, C++17 compiler, and zlib development package are
+required for the real-executable integration suite.

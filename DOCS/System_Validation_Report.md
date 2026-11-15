@@ -8,7 +8,7 @@ Validate the File Compression Tool's user-facing compress, list, and extract wor
 
 The tested workflow ran on Windows. The React + Vite frontend was served at `http://localhost:5173`, and the Flask backend at `http://127.0.0.1:5000`. The backend invokes a C++ compression binary built with MSYS2 UCRT64. Browser file selections were submitted through the interface to the Flask API; the backend passed ZIP operations to the C++ engine and returned downloadable ZIP files or archive listings.
 
-The current repository snapshot contains `backend/app.py` and `tests/smoke_test.cpp`, but the requested `frontend/src/App.tsx` and `frontend/vite.config.ts` were unavailable during this report's source review. The frontend behavior below is therefore based on the supplied manual execution record, rather than verification against those two frontend source files. The existing Software Test Plan (STP) was reviewed for requirement IDs.
+The merged repository now includes `frontend/src/App.tsx` and `frontend/vite.config.ts`. Source review confirms the interface exposes Compress, Extract, and List ZIP Contents actions and proxies `/api` requests to the Flask backend at `http://127.0.0.1:5000`. The manual outcomes below remain based on the supplied execution record; source inspection is not a substitute for browser execution. The existing Software Test Plan (STP) was reviewed for requirement IDs.
 
 ## 3. Test methodology
 
@@ -37,7 +37,7 @@ This verifies byte-for-byte identity for the tested DOCX. The JPEG and PDF were 
 
 The three-file archive could be downloaded, listed, and extracted through the browser workflow. The extraction endpoint in `backend/app.py` invokes the C++ extractor, then **repackages the extracted files into `extracted.zip`** for a convenient browser download. Accordingly, `extracted.zip` is the transport artifact; Windows Extract All was used to inspect its contents.
 
-This validation used one three-file archive containing the stated file types and one hash comparison. It does not establish behavior for other formats, file sizes, invalid archives, security cases, or other platforms. File presence alone does not prove byte-for-byte integrity of the JPEG or PDF. The frontend source files were unavailable in the reviewed snapshot, so this report does not assert source-level details of the frontend implementation.
+This validation used one three-file archive containing the stated file types and one hash comparison. It does not establish behavior for other formats, file sizes, invalid archives, security cases, or other platforms. File presence alone does not prove byte-for-byte integrity of the JPEG or PDF. Source inspection confirms the frontend action components and development API proxy, but no new manual browser execution was performed as part of this report update.
 
 ## 7. Requirement traceability
 
@@ -52,6 +52,13 @@ The STP identifies `FCT-F-008` for creating a compressed output file, `FCT-F-014
 
 SV-02 validates the observed List feature, but this report does not assign it an STP requirement ID without a verified matching requirement. The STP's planned test cases and their statuses are separate from these performed manual checks.
 
-## 8. Overall validation summary and conclusion
+## 9. Overall validation summary and conclusion
 
 All **four performed manual system checks passed** in the stated Windows environment. The interface successfully produced a named ZIP, displayed its three filenames, and returned an extraction ZIP containing the three files. The original and extracted DOCX had identical SHA-256 hashes. These results validate the exercised end-to-end workflow and DOCX integrity only; automated CTest and pytest execution are reported separately in the project's unit testing documentation.
+
+
+## 8. Additional automated API integration evidence (PR #18)
+
+A separate automated integration suite, `backend/test_integration.py`, builds the real C++ executable and exercises the Flask Compress, List, and Extract routes through Flask's test client. The associated GitHub Actions run **43687260485** completed successfully with **28 backend tests passed** and **1/1 registered C++ CTest tests passed**. The integration suite verifies text, binary, and empty-file behavior, byte-for-byte round trips, nested paths, custom archive naming, invalid and zero-byte archives, upload limits, configured exact-boundary behavior, and temporary-workspace cleanup for the tested success and failure paths.
+
+This is automated API evidence and is separate from the four manual browser checks in Section 4. The controlled small-limit tests do not constitute full default 50 MiB/100 MiB stress tests. This report update does not claim that additional manual frontend tests were performed.
