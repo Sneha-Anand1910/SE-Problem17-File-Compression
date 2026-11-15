@@ -67,9 +67,9 @@ tests. The Actual result field is intentionally blank for every case.
 - **Expected result:** Empty ordinary input is accepted and remains zero bytes
   after round-trip. Missing upload and zero-byte archive inputs are rejected
   with an error response.
-- **Actual result:** Not independently verified for this test case.
-- **Status:** Not Run
-- **Existing coverage:** `backend/test_app.py` checks empty upload saving, and `tests/smoke_test.cpp` checks empty-file round-trip.     Full API route behavior has not been verified.
+- **Actual result:** The real-executable Flask integration suite uploads a zero-byte ordinary file, compresses it, extracts it, and verifies that the restored entry is still zero bytes. The suite does not independently test a request with no file or a zero-byte archive submitted to List/Extract.
+- **Status:** Partially Passed
+- **Existing coverage:** `backend/test_integration.py` covers the empty ordinary-file compress/extract round-trip. Missing-upload and zero-byte-archive route behavior remain separate checks.
   
 ## SEC-LIMIT-FILE-EXACT — File exactly at per-file limit
 
@@ -292,8 +292,9 @@ tests. The Actual result field is intentionally blank for every case.
   extracted data are removed after the response, including handled failures.
 - **Actual result:**
 - **Status:** Not Run
-- **Existing coverage:** No explicit temporary-directory cleanup test
-  identified.
+- **Actual result:** The real-executable Flask integration suite tracks temporary workspaces and verifies cleanup after successful compression and after an invalid archive is submitted to List. Extract-success cleanup, executable-failure cleanup, and timeout cleanup are not separately asserted by this suite.
+- **Status:** Partially Passed
+- **Existing coverage:** `backend/test_integration.py` contains `test_real_api_cleans_compression_workspace_after_success` and `test_real_api_cleans_archive_workspace_after_invalid_input`.
 
 ## SEC-REAL-API — Flask integration with real C++ executable
 
@@ -310,10 +311,6 @@ tests. The Actual result field is intentionally blank for every case.
   5. Confirm all intermediate files remain in disposable temporary storage.
 - **Expected result:** The real executable is invoked, response formats match
   the current route contract, and round-trip data is identical.
-- **Actual result:** Configured `COMPRESSION_BINARY` to the real
-  `build/file-compress.exe`. Flask test-client requests returned HTTP 200
-  for `/api/compress`, `/api/list`, and `/api/extract`. Verified the
-  extracted file bytes exactly matched the original synthetic input.
+- **Actual result:** In addition to the previously recorded manual real-binary run, the automated `backend/test_integration.py` suite now builds the real executable with CMake and invokes it through Flask. It verifies successful Compress, List, and Extract requests, byte-for-byte text and binary round-trips, empty-file preservation, and nested upload paths. The PR CI run completed with 21 backend tests passing.
 - **Status:** Passed
-- **Existing coverage:** The current Flask test fixture uses a placeholder
-  executable. No real-executable route integration test was identified.
+- **Existing coverage:** `backend/test_integration.py` provides automated real-executable route integration coverage; `backend/test_app.py` continues to cover helper and validation behavior.
