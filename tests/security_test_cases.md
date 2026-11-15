@@ -16,7 +16,9 @@ contents must not be treated as unsupported solely because of their
 extension or MIME type.
 
 Existing coverage is referenced where relevant to avoid duplicating automated
-tests. Actual results and execution statuses are recorded for each test case.
+tests. Actual results are recorded for executed cases; cases that were not
+executed or are only partially covered are explicitly marked as Blocked or
+Partially Passed.
 
 ## SEC-UPLOAD-01 — Upload validation and unsupported archive
 
@@ -55,10 +57,8 @@ tests. Actual results and execution statuses are recorded for each test case.
 
 ## SEC-UPLOAD-02 — Empty uploads
 
-- **Test objective:** Distinguish an empty file from an absent upload and
-  verify the current empty-file behavior through the API.
-- **Test input:** A zero-byte ordinary file; a request with no file; a
-  zero-byte file supplied as the archive.
+- **Test objective:** Distinguish an empty file from an absent upload and verify the current empty-file behavior through the API.
+- **Test input:** A zero-byte ordinary file; a request with no file; a zero-byte file supplied as the archive.
 - **Test steps:**
   1. POST the zero-byte ordinary file to `/api/compress`.
   2. Submit the returned ZIP to `/api/list` and `/api/extract`.
@@ -67,17 +67,25 @@ tests. Actual results and execution statuses are recorded for each test case.
 - **Expected result:** Empty ordinary input is accepted and remains zero bytes
   after round-trip. Missing upload and zero-byte archive inputs are rejected
   with an error response.
-- **Actual result:** A zero-byte ordinary file was accepted by `/api/compress` (HTTP 200). The resulting ZIP was listed and extracted successfully (HTTP 200), preserving the zero-byte file. A zero-byte archive submitted to `/api/list` and `/api/extract` returned HTTP 400 (Invalid ZIP file).
+- **Actual result:** A zero-byte ordinary file was accepted by `/api/compress`
+  (HTTP 200). The resulting ZIP was listed and extracted successfully
+  (HTTP 200), preserving the zero-byte file. A zero-byte archive submitted to
+  `/api/list` and `/api/extract` returned HTTP 400 (Invalid ZIP file). The
+  automated real-executable Flask integration suite also compresses and
+  extracts a zero-byte ordinary file and verifies that the restored entry is
+  still zero bytes. It submits a zero-byte archive to both routes, which
+  return HTTP 400. Missing-upload behavior is separately covered by
+  SEC-UPLOAD-01.
 - **Status:** Passed
-- **Existing coverage:** `backend/test_app.py` checks empty upload saving, and `tests/smoke_test.cpp` checks an empty-file round-trip. Full API route behavior has now been verified through the security test.
+- **Existing coverage:** `backend/test_app.py` checks empty upload saving;
+  `backend/test_integration.py` covers the empty-file round-trip and zero-byte
+  archive rejection through both routes; `tests/smoke_test.cpp` checks an
+  empty-file round-trip.
 
 ## SEC-LIMIT-FILE-EXACT — File exactly at per-file limit
 
-- **Test objective:** Verify acceptance at the configured per-file size
-  boundary.
-- **Test input:** A synthetic file exactly `MAX_FILE_SIZE` bytes (50 MiB by
-  default); ensure the complete multipart request remains below
-  `MAX_CONTENT_LENGTH`.
+- **Test objective:** Verify acceptance at the configured per-file size boundary.
+- **Test input:** A synthetic file exactly `MAX_FILE_SIZE` bytes.
 - **Test steps:**
   1. Record effective `MAX_FILE_SIZE` and `MAX_CONTENT_LENGTH`.
   2. Generate exactly the configured per-file number of synthetic bytes in
@@ -85,9 +93,16 @@ tests. Actual results and execution statuses are recorded for each test case.
   3. POST the file to `/api/compress`.
 - **Expected result:** The per-file size check accepts the file; the request
   succeeds if all other limits and executable prerequisites are satisfied.
-- **Actual result:** MAX_FILE_SIZE was 52,428,800 bytes (50 MiB). A synthetic file of exactly 52,428,800 bytes was accepted by /api/compress with HTTP 200; exact.zip was 51,098 bytes.
-- **Status:** Passed
-- **Existing coverage:** No exact per-file boundary case identified.
+- **Actual result:** In the manual default-limit run, `MAX_FILE_SIZE` was
+  52,428,800 bytes (50 MiB). A synthetic file of exactly that size was
+  accepted by `/api/compress` with HTTP 200; `exact.zip` was 51,098 bytes.
+  Separately, the automated real-executable integration test set
+  `MAX_FILE_SIZE` to 3 bytes and submitted a 3-byte file; the API returned
+  HTTP 200 and the ZIP preserved all three bytes. The default-size result was
+  manually tested; the automated integration test used a controlled limit.
+- **Status:** Passed (manual default-limit run and automated controlled
+  3-byte configuration)
+- **Existing coverage:** `backend/test_integration.py::test_real_api_accepts_file_exactly_at_configured_limit`.
 
 ## SEC-LIMIT-FILE-OVER — File one byte above per-file limit
 
@@ -132,10 +147,8 @@ tests. Actual results and execution statuses are recorded for each test case.
 
 ## SEC-LIMIT-REQUEST — Request-size boundary
 
-- **Test objective:** Verify the total request limit, including multipart
-  framing.
-- **Test input:** Multipart request bodies whose complete encoded size is
-  exactly `MAX_CONTENT_LENGTH` and one byte above it (100 MiB by default).
+- **Test objective:** Verify the total request limit, including multipart framing.
+- **Test input:** Multipart request bodies at and one byte above the configured `MAX_CONTENT_LENGTH`.
 - **Test steps:**
   1. Record effective `MAX_CONTENT_LENGTH`.
   2. Construct requests with controlled complete body lengths; account for
@@ -149,9 +162,13 @@ tests. Actual results and execution statuses are recorded for each test case.
   and 104,857,601 bytes, with both individual files below the 50 MiB limit.
   The exact-limit request returned HTTP 200; the one-byte-over request
   returned HTTP 413 with `{"error":"Request exceeds the upload size limit"}`.
-- **Status:** Passed
-- **Existing coverage:** `backend/test_app.py` tests an oversized request.
-  Exact-boundary behavior is not covered.
+  Separately, the automated real-executable integration test accepts a
+  multipart body at its exact configured cap and returns HTTP 413 when the cap
+  is reduced by one byte.
+- **Status:** Passed (manual default 100 MiB boundary and automated
+  exact-boundary configuration)
+- **Existing coverage:** `backend/test_integration.py::test_real_api_accepts_request_exactly_at_content_length_limit` and
+  `backend/test_app.py` oversized-request test.
 
 ## SEC-ZIP-CORRUPT — Corrupted archive through API
 
@@ -311,25 +328,27 @@ tests. Actual results and execution statuses are recorded for each test case.
 
 ## SEC-TEMP-CLEANUP — Temporary-file cleanup after success and failure
 
-- **Test objective:** Verify request-specific staging data is removed after
-  successful and failed operations.
-- **Test input:** Synthetic valid uploads and a synthetic invalid archive;
-  isolated test temporary root.
+- **Test objective:** Verify request-specific staging data is removed after successful and failed operations.
+- **Test input:** Synthetic valid uploads and a synthetic invalid archive; isolated test temporary root.
 - **Test steps:**
   1. Send successful compress, extract, and list requests.
-  2. Trigger validation failure, invalid archive, executable failure, and
-     timeout paths using controlled test configuration.
+  2. Trigger invalid-archive, executable-failure, and timeout paths using controlled test configuration.
   3. Inspect the test temporary root after each response.
 - **Expected result:** Each request's temporary directory and uploaded or
   extracted data are removed after the response, including handled failures.
-- **Actual result:** With the real C++ executable, API compress/list/extract
-  requests succeeded and left no request-specific temporary directories.
-  Rejected a synthetic ZIP Slip archive, a missing-executable request, and
-  a subprocess timeout (using a short controlled timeout); each also left no
-  request-specific temporary directories.
-- **Status:** Passed
-- **Existing coverage:** No explicit temporary-directory cleanup test
-  identified.
+- **Actual result:** In the manual real-executable run, Compress, List, and
+  Extract succeeded without leaving request-specific temporary directories.
+  A synthetic ZIP Slip archive, a missing-executable request, and a
+  subprocess timeout (using a short controlled timeout) also left no such
+  directories. Automated real-executable Flask tests separately verify
+  workspace cleanup after successful Compress, List, and Extract; invalid
+  archive input to List; a synthetic executable nonzero exit; and a synthetic
+  subprocess timeout. Automated validation-failure cleanup is not separately
+  asserted.
+- **Status:** Passed (manual cleanup checks); automated coverage is partial
+  because validation-failure cleanup is not separately asserted.
+- **Existing coverage:** `backend/test_integration.py` contains dedicated
+  workspace-cleanup tests for the automated cases listed above.
 
 ## SEC-REAL-API — Flask integration with real C++ executable
 
@@ -346,10 +365,6 @@ tests. Actual results and execution statuses are recorded for each test case.
   5. Confirm all intermediate files remain in disposable temporary storage.
 - **Expected result:** The real executable is invoked, response formats match
   the current route contract, and round-trip data is identical.
-- **Actual result:** Configured `COMPRESSION_BINARY` to the real
-  `build/file-compress.exe`. Flask test-client requests returned HTTP 200
-  for `/api/compress`, `/api/list`, and `/api/extract`. Verified the
-  extracted file bytes exactly matched the original synthetic input.
+- **Actual result:** In addition to the previously recorded manual real-binary run, the automated `backend/test_integration.py` suite now builds the real executable with CMake and invokes it through Flask. It verifies successful Compress, List, and Extract requests, byte-for-byte text and binary round-trips, empty-file preservation, and nested upload paths. The PR CI run completed with 28 backend tests passing and 1/1 registered C++ tests passing.
 - **Status:** Passed
-- **Existing coverage:** The current Flask test fixture uses a placeholder
-  executable. No real-executable route integration test was identified.
+- **Existing coverage:** `backend/test_integration.py` provides automated real-executable route integration coverage; `backend/test_app.py` continues to cover helper and validation behavior.
