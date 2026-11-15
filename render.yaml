@@ -1,0 +1,10 @@
+services:
+  - type: web
+    name: file-compression-tool
+    runtime: docker
+    repo: https://github.com/shubharth2006/SE-Problem17-File-Compression
+    branch: main
+    dockerfilePath: ./Dockerfile
+    dockerContext: .
+    autoDeployTrigger: checksPass
+    healthCheckPath: /
